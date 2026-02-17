@@ -10,6 +10,7 @@ from user.user_service import UserService
 from learning.learning_service import LearningService
 from scheduling.schedule_service import ScheduleService
 from analytics.analytics_service import AnalyticsService
+from analytics.admin_analytics_service import AdminAnalyticsService
 from questionnaires.questionnaire_service import QuestionnaireService
 from admin.admin_service import AdminService
 from core.ai_feedback_service import AiFeedbackService
@@ -40,6 +41,7 @@ def main():
         "learning": LearningService(db, settings),
         "schedule": ScheduleService(db, settings),
         "analytics": AnalyticsService(db, settings),
+        "admin_analytics": AdminAnalyticsService(db, settings),
         "questionnaire": QuestionnaireService(db, settings),
         "admin": AdminService(db, settings),
         "ai": AiFeedbackService(),

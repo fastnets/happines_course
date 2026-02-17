@@ -24,6 +24,17 @@ BTN_RANDOM_Q = "🎲 Рандомная анкета всем"
 BTN_YES = "Да"
 BTN_NO = "Нет"
 
+# Analytics submenu
+BTN_PERIOD_TODAY = "Сегодня"
+BTN_PERIOD_7 = "7 дней"
+BTN_PERIOD_30 = "30 дней"
+BTN_A_SUMMARY = "📊 Сводка"
+BTN_A_FUNNEL = "🧭 Воронка"
+BTN_A_DELIVERY = "📬 Доставка"
+BTN_A_CONTENT = "📚 Контент"
+BTN_A_QUESTIONNAIRES = "📋 Анкеты"
+BTN_A_REMINDERS = "⏰ Ремайндеры"
+
 
 def _extract_quest_points(item: dict) -> int:
     """Return quest points from current or legacy field names."""
@@ -61,8 +72,21 @@ def kb_admin_actions(include_random: bool = False):
     return kb(rows)
 
 
+def kb_admin_analytics():
+    return kb(
+        [
+            [KeyboardButton(BTN_PERIOD_TODAY), KeyboardButton(BTN_PERIOD_7), KeyboardButton(BTN_PERIOD_30)],
+            [KeyboardButton(BTN_A_SUMMARY), KeyboardButton(BTN_A_FUNNEL)],
+            [KeyboardButton(BTN_A_DELIVERY), KeyboardButton(BTN_A_CONTENT)],
+            [KeyboardButton(BTN_A_QUESTIONNAIRES), KeyboardButton(BTN_A_REMINDERS)],
+            [KeyboardButton(texts.BTN_BACK)],
+        ]
+    )
+
+
 def register_admin_handlers(app, settings: Settings, services: dict):
     admin_svc = services.get("admin")
+    admin_analytics = services.get("admin_analytics")
 
     def _is_admin(update: Update) -> bool:
         try:
@@ -80,8 +104,11 @@ def register_admin_handlers(app, settings: Settings, services: dict):
     # ----------------------------
     # Navigation helpers
     # ----------------------------
-    def _set_menu(uid: int, screen: str):
-        state.set_state(uid, ADMIN_MENU_STEP, {"screen": screen})
+    def _set_menu(uid: int, screen: str, extra: dict | None = None):
+        payload = {"screen": screen}
+        if extra:
+            payload.update(extra)
+        state.set_state(uid, ADMIN_MENU_STEP, payload)
 
     async def _show_main_menu(update: Update):
         uid = update.effective_user.id
@@ -109,6 +136,22 @@ def register_admin_handlers(app, settings: Settings, services: dict):
         uid = update.effective_user.id
         _set_menu(uid, "questionnaires")
         await update.effective_message.reply_text("📋 Анкеты", reply_markup=kb_admin_actions(True))
+
+    async def _show_analytics_menu(update: Update, days: int = 7):
+        uid = update.effective_user.id
+        safe_days = 7
+        try:
+            safe_days = int(days)
+        except Exception:
+            safe_days = 7
+        if safe_days not in (1, 7, 30):
+            safe_days = 7
+        _set_menu(uid, "analytics", {"days": safe_days})
+        label = "Сегодня" if safe_days == 1 else f"Последние {safe_days} дней"
+        await update.effective_message.reply_text(
+            f"📈 Аналитика\nПериод: {label}\n\nВыбери отчёт:",
+            reply_markup=kb_admin_analytics(),
+        )
 
     # ----------------------------
     # Entry points
@@ -268,13 +311,13 @@ def register_admin_handlers(app, settings: Settings, services: dict):
         screen = payload.get("screen")
 
         # Back inside admin menu:
-        #   lessons/quests/questionnaires -> admin home
+        #   lessons/quests/questionnaires/analytics -> admin home
         #   home -> main menu
         # (Wizard has its own Back in wizard_text.)
         if text == texts.BTN_BACK:
             screen0 = (screen or "home").lower()
 
-            if screen0 in ("lessons", "quests", "questionnaires"):
+            if screen0 in ("lessons", "quests", "questionnaires", "analytics"):
                 await _show_admin_home(update)
                 raise ApplicationHandlerStop
 
@@ -291,8 +334,44 @@ def register_admin_handlers(app, settings: Settings, services: dict):
             if text == texts.ADMIN_QUESTIONNAIRES:
                 await _show_q_menu(update); raise ApplicationHandlerStop
             if text == texts.ADMIN_ANALYTICS:
-                await update.effective_message.reply_text("📈 Аналитика: пока не реализовано.")
-                return
+                await _show_analytics_menu(update, 7); raise ApplicationHandlerStop
+
+        if screen == "analytics":
+            payload0 = payload or {}
+            days = 7
+            try:
+                days = int(payload0.get("days") or 7)
+            except Exception:
+                days = 7
+            if text == BTN_PERIOD_TODAY:
+                await _show_analytics_menu(update, 1); raise ApplicationHandlerStop
+            if text == BTN_PERIOD_7:
+                await _show_analytics_menu(update, 7); raise ApplicationHandlerStop
+            if text == BTN_PERIOD_30:
+                await _show_analytics_menu(update, 30); raise ApplicationHandlerStop
+
+            if not admin_analytics:
+                await update.effective_message.reply_text("⚠️ Сервис аналитики не подключён.", reply_markup=kb_admin_analytics())
+                raise ApplicationHandlerStop
+
+            if text == BTN_A_SUMMARY:
+                await update.effective_message.reply_text(admin_analytics.summary_report(days), reply_markup=kb_admin_analytics())
+                raise ApplicationHandlerStop
+            if text == BTN_A_FUNNEL:
+                await update.effective_message.reply_text(admin_analytics.funnel_report(days), reply_markup=kb_admin_analytics())
+                raise ApplicationHandlerStop
+            if text == BTN_A_DELIVERY:
+                await update.effective_message.reply_text(admin_analytics.delivery_report(days), reply_markup=kb_admin_analytics())
+                raise ApplicationHandlerStop
+            if text == BTN_A_CONTENT:
+                await update.effective_message.reply_text(admin_analytics.content_report(days), reply_markup=kb_admin_analytics())
+                raise ApplicationHandlerStop
+            if text == BTN_A_QUESTIONNAIRES:
+                await update.effective_message.reply_text(admin_analytics.questionnaires_report(days), reply_markup=kb_admin_analytics())
+                raise ApplicationHandlerStop
+            if text == BTN_A_REMINDERS:
+                await update.effective_message.reply_text(admin_analytics.reminders_report(days), reply_markup=kb_admin_analytics())
+                raise ApplicationHandlerStop
 
         if screen == "lessons":
             if text == BTN_LIST: await lessons_list(update); raise ApplicationHandlerStop
