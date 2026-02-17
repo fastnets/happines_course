@@ -27,6 +27,14 @@ BTN_YES = "Да"
 BTN_NO = "Нет"
 
 
+def _extract_quest_points(item: dict) -> int:
+    """Return quest points from current or legacy field names."""
+    try:
+        return int(item.get("points") or item.get("points_reply") or 0)
+    except Exception:
+        return 0
+
+
 def kb(rows):
     return ReplyKeyboardMarkup(rows, resize_keyboard=True)
 
@@ -211,7 +219,7 @@ def register_admin_handlers(app, settings: Settings, services: dict):
             return
         lines = ["📝 *Задания* (день → баллы)"]
         for it in items:
-            pts = int(it.get("points_reply") or 0)
+            pts = _extract_quest_points(it)
             prompt = (it.get("prompt") or "").replace("\n", " ")
             if len(prompt) > 60:
                 prompt = prompt[:57] + "..."
