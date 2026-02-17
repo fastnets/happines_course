@@ -15,8 +15,6 @@ ADMIN_MENU_STEP = "admin_menu"
 ADMIN_WIZARD_STEP = "admin_wizard"
 
 # Reply buttons (admin UI)
-BTN_CONTENT = "📚 Контент"
-BTN_AI_TEST = "🧠 Тест ИИ"
 BTN_LIST = "📋 Список"
 BTN_CREATE = "➕ Создать"
 BTN_EDIT = "✏️ Редактировать"
@@ -46,21 +44,11 @@ def kb_yes_no():
 def kb_admin_home():
     return kb(
         [
-            [KeyboardButton(BTN_CONTENT), KeyboardButton(BTN_AI_TEST)],
-            [KeyboardButton(texts.BTN_BACK)],
-        ]
-    )
-
-
-def kb_admin_library():
-    return kb(
-        [
             [KeyboardButton(texts.ADMIN_LESSONS), KeyboardButton(texts.ADMIN_QUESTS)],
             [KeyboardButton(texts.ADMIN_QUESTIONNAIRES), KeyboardButton(texts.ADMIN_ANALYTICS)],
             [KeyboardButton(texts.BTN_BACK)],
         ]
     )
-
 
 def kb_admin_actions(include_random: bool = False):
     rows = [
@@ -107,11 +95,6 @@ def register_admin_handlers(app, settings: Settings, services: dict):
         _set_menu(uid, "home")
         await update.effective_message.reply_text("🛠 Админка", reply_markup=kb_admin_home())
 
-    async def _show_library(update: Update):
-        uid = update.effective_user.id
-        _set_menu(uid, "library")
-        await update.effective_message.reply_text("📚 Контент", reply_markup=kb_admin_library())
-
     async def _show_lessons_menu(update: Update):
         uid = update.effective_user.id
         _set_menu(uid, "lessons")
@@ -142,45 +125,6 @@ def register_admin_handlers(app, settings: Settings, services: dict):
             return
         await _show_admin_home(update)
         raise ApplicationHandlerStop
-
-    # ----------------------------
-    # AI test
-    # ----------------------------
-    async def _run_ai_test(update: Update):
-        if not _is_admin(update):
-            return
-        ai = services.get("ai")
-        if not ai:
-            await update.effective_message.reply_text("❌ AI сервис не инициализирован (services['ai'] отсутствует).")
-            return
-        enabled = getattr(ai, "enabled", lambda: False)()
-        model = getattr(ai, "model", None)
-        verify_ssl = getattr(ai, "verify_ssl", None)
-        timeout = getattr(ai, "timeout_sec", None)
-
-        if not enabled:
-            await update.effective_message.reply_text(
-                "❌ AI отключён.\n"
-                f"model={model!r}\nverify_ssl={verify_ssl!r}\ntimeout={timeout!r}"
-            )
-            return
-
-        try:
-            if hasattr(ai, "ping"):
-                res = await ai.ping()
-                await update.effective_message.reply_text(f"✅ AI ping OK: {res}")
-                return
-            if hasattr(ai, "test"):
-                res = await ai.test()
-                await update.effective_message.reply_text(f"✅ AI test OK: {res}")
-                return
-            if hasattr(ai, "complete"):
-                res = await ai.complete("Скажи 'ok' одним словом.")
-                await update.effective_message.reply_text(f"✅ AI complete OK: {res}")
-                return
-            await update.effective_message.reply_text("⚠️ AI сервис подключён, но не нашёл методов ping/test/complete.")
-        except Exception as e:
-            await update.effective_message.reply_text(f"❌ AI тест упал: {type(e).__name__}: {e}")
 
     # ----------------------------
     # Actions (reply-based)
@@ -324,18 +268,13 @@ def register_admin_handlers(app, settings: Settings, services: dict):
         screen = payload.get("screen")
 
         # Back inside admin menu:
-        #   lessons/quests/questionnaires -> library
-        #   library -> home
+        #   lessons/quests/questionnaires -> admin home
         #   home -> main menu
         # (Wizard has its own Back in wizard_text.)
         if text == texts.BTN_BACK:
             screen0 = (screen or "home").lower()
 
             if screen0 in ("lessons", "quests", "questionnaires"):
-                await _show_library(update)
-                raise ApplicationHandlerStop
-
-            if screen0 == "library":
                 await _show_admin_home(update)
                 raise ApplicationHandlerStop
 
@@ -344,13 +283,7 @@ def register_admin_handlers(app, settings: Settings, services: dict):
             await _show_main_menu(update)
             raise ApplicationHandlerStop
 
-        if screen == "home":
-            if text == BTN_CONTENT:
-                await _show_library(update); raise ApplicationHandlerStop
-            if text == BTN_AI_TEST:
-                await _run_ai_test(update); raise ApplicationHandlerStop
-
-        if screen == "library":
+        if screen in ("home", "library"):
             if text == texts.ADMIN_LESSONS:
                 await _show_lessons_menu(update); raise ApplicationHandlerStop
             if text == texts.ADMIN_QUESTS:
