@@ -1,0 +1,1145 @@
+import asyncio
+import json
+import logging
+import re
+from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
+
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardRemove, Update
+from telegram.ext import (
+    ApplicationHandlerStop,
+    CallbackQueryHandler,
+    CommandHandler,
+    ContextTypes,
+    MessageHandler,
+    filters,
+)
+
+from entity.settings import Settings
+from event_bus import callbacks as cb
+from static.faq import FAQ
+from ui import texts
+from ui.keyboards import menus
+
+
+log = logging.getLogger("happines_course")
+
+
+# ===== User steps stored in user_state (via UserService) =====
+STEP_WAIT_NAME = "wait_name"
+STEP_WAIT_TIME = "wait_time"
+STEP_ENROLL_TIME = "enroll_time"
+STEP_PD_CONSENT = "pd_consent"
+STEP_WAIT_TZ = "wait_timezone"
+
+# Habits wizard
+STEP_HABIT_WAIT_TITLE = "habit_wait_title"
+STEP_HABIT_WAIT_TIME = "habit_wait_time"
+STEP_HABIT_WAIT_FREQ = "habit_wait_freq"
+
+# Habits management (reply-menu driven)
+STEP_HABIT_PICK_FOR_EDIT = "habit_pick_for_edit"
+STEP_HABIT_EDIT_MENU = "habit_edit_menu"
+STEP_HABIT_EDIT_TITLE = "habit_edit_title"
+STEP_HABIT_EDIT_TIME = "habit_edit_time"
+STEP_HABIT_EDIT_FREQ = "habit_edit_freq"
+STEP_HABIT_PICK_FOR_DELETE = "habit_pick_for_delete"
+STEP_HABIT_DELETE_CONFIRM = "habit_delete_confirm"
+
+
+def _format_faq() -> str:
+    try:
+        return "❓ Помощь\n\n" + "\n".join([f"{q} — {a}" for q, a in FAQ])
+    except Exception:
+        return "❓ Помощь\n\n" + str(FAQ)
+
+
+def register_user_handlers(app, settings: Settings, services: dict):
+    user_svc = services["user"]
+    analytics = services["analytics"]
+    schedule = services["schedule"]
+    learning = services.get("learning")
+    daily = services.get("daily_pack")
+    admin_svc = services.get("admin")
+    habit_svc = services.get("habit")
+    habit_schedule = services.get("habit_schedule")
+
+    def _is_admin(uid: int) -> bool:
+        try:
+            return bool(admin_svc and admin_svc.is_admin(uid))
+        except Exception:
+            return False
+
+    def _parse_hhmm(raw: str) -> str | None:
+        """Strict HH:MM validation (00-23 / 00-59). Returns normalized string or None."""
+
+        s = (raw or "").strip()
+        if not re.fullmatch(r"\d{2}:\d{2}", s):
+            return None
+        try:
+            hh_s, mm_s = s.split(":", 1)
+            hh = int(hh_s)
+            mm = int(mm_s)
+        except Exception:
+            return None
+        if not (0 <= hh <= 23 and 0 <= mm <= 59):
+            return None
+        return f"{hh:02d}:{mm:02d}"
+
+    def _extract_habit_id(raw: str) -> int | None:
+        s = (raw or "").strip()
+        if s.startswith("#"):
+            s = s[1:]
+        if not s.isdigit():
+            return None
+        try:
+            hid = int(s)
+            return hid if hid > 0 else None
+        except Exception:
+            return None
+
+    # ----------------------------
+    # /start
+    # ----------------------------
+    async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        u = update.effective_user
+        display_name = u.first_name or u.full_name or (u.username or "")
+        user_svc.ensure_user(u.id, u.username, display_name)
+
+        if not user_svc.has_pd_consent(u.id):
+            user_svc.set_step(u.id, STEP_PD_CONSENT, {})
+            text = (
+                "👋 Привет! Перед началом мне нужно твоё согласие на обработку персональных данных.\n\n"
+                "Я храню минимальные данные (TG id, имя/ник, настройки расписания) только для работы курса.\n"
+                "Если не согласен — я не смогу продолжить."
+            )
+            await update.effective_message.reply_text(text, reply_markup=menus.kb_consent())
+            return
+
+        prof = analytics.profile(u.id)
+
+        # Deep-link support: /start gol_<day> or /start goq_<day>
+        if prof.get("enrolled") and context.args:
+            payload = (context.args[0] or "").strip()
+            m = re.match(r"^(go[ql])_(\d+)$", payload)
+            if m:
+                kind = m.group(1)  # goq / gol
+                day_index = int(m.group(2))
+                if kind == "gol":
+                    lesson = schedule.lesson.get_by_day(day_index)
+                    if lesson:
+                        pts = int(lesson.get("points_viewed") or 0)
+                        viewed_cb = schedule.make_viewed_cb(day_index, pts)
+                        kb_i = InlineKeyboardMarkup(
+                            [[InlineKeyboardButton("Просмотрено", callback_data=viewed_cb)]]
+                        )
+                        title = lesson.get("title") or f"День {day_index}"
+                        desc = lesson.get("description") or ""
+                        video = lesson.get("video_url") or ""
+                        msg = f"📚 Лекция дня {day_index}\n*{title}*\n\n{desc}"
+                        if video:
+                            msg += f"\n\n🎥 {video}"
+                        await update.effective_message.reply_text(
+                            msg, parse_mode="Markdown", reply_markup=kb_i
+                        )
+                else:
+                    quest = schedule.quest.get_by_day(day_index)
+                    if quest:
+                        reply_cb = f"{cb.QUEST_REPLY_PREFIX}{day_index}"
+                        kb_i = InlineKeyboardMarkup(
+                            [[InlineKeyboardButton("✍️ Ответить на задание", callback_data=reply_cb)]]
+                        )
+                        qtext = (
+                            f"📝 Задание дня {day_index}:\n{quest['prompt']}\n\n"
+                            "Нажми кнопку ниже, чтобы продолжить, или просто ответь сообщением в чат."
+                        )
+                        await update.effective_message.reply_text(qtext, reply_markup=kb_i)
+                await update.effective_message.reply_text(
+                    "Главное меню 👇", reply_markup=menus.kb_main(_is_admin(u.id))
+                )
+                return
+
+        if not prof.get("enrolled"):
+            if not user_svc.get_timezone(u.id):
+                user_svc.set_step(u.id, STEP_WAIT_TZ, {})
+                await update.effective_message.reply_text(
+                    "🕒 Сначала выбери свой часовой пояс:", reply_markup=menus.kb_timezone()
+                )
+                return
+
+            user_svc.set_step(u.id, STEP_ENROLL_TIME, {})
+            await update.effective_message.reply_text(
+                "⏰ Выбери удобное время получения материалов (ЧЧ:ММ):",
+                reply_markup=menus.kb_enroll_time(),
+            )
+            return
+
+        await update.effective_message.reply_text(
+            f"Привет, {prof['display_name']}! 👋\n"
+            f"Баллы: {prof['points']}\n"
+            "\nВыбери раздел в меню ниже 👇",
+            reply_markup=menus.kb_main(_is_admin(u.id)),
+        )
+
+    # ----------------------------
+    # /enroll
+    # ----------------------------
+    async def enroll_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        uid = update.effective_user.id
+        if not user_svc.has_pd_consent(uid):
+            user_svc.set_step(uid, STEP_PD_CONSENT, {})
+            await update.effective_message.reply_text(
+                "👋 Перед записью нужно согласие на обработку персональных данных.",
+                reply_markup=menus.kb_consent(),
+            )
+            return
+
+        if not user_svc.get_timezone(uid):
+            user_svc.set_step(uid, STEP_WAIT_TZ, {})
+            await update.effective_message.reply_text(
+                "🕒 Сначала выбери часовой пояс:", reply_markup=menus.kb_timezone()
+            )
+            return
+
+        user_svc.set_step(uid, STEP_ENROLL_TIME, {})
+        await update.effective_message.reply_text(
+            "📝 Запись на «Курс на счастье»\n\nВо сколько удобно получать ежедневные материалы?",
+            reply_markup=menus.kb_enroll_time(),
+        )
+
+    # ----------------------------
+    # Callback handlers (consent / timezone / enroll time)
+    # ----------------------------
+    async def consent_pick(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        q = update.callback_query
+        await q.answer()
+        choice = q.data.split(":", 1)[-1]
+        if choice != "yes":
+            user_svc.set_pd_consent(q.from_user.id, False)
+            user_svc.set_step(q.from_user.id, None)
+            await q.edit_message_text(
+                "Понял. Без согласия я не могу продолжить работу. Если передумаешь — нажми /start"
+            )
+            try:
+                await q.message.reply_text("", reply_markup=ReplyKeyboardRemove())
+            except Exception:
+                pass
+            return
+
+        user_svc.set_pd_consent(q.from_user.id, True)
+        if not user_svc.get_timezone(q.from_user.id):
+            user_svc.set_step(q.from_user.id, STEP_WAIT_TZ, {})
+            await q.edit_message_text(
+                "✅ Спасибо! Теперь выбери часовой пояс — это нужно, чтобы материалы приходили вовремя."
+            )
+            await q.message.reply_text("Выбери часовой пояс:", reply_markup=menus.kb_timezone())
+            return
+
+        user_svc.set_step(q.from_user.id, STEP_ENROLL_TIME, {})
+        await q.edit_message_text(
+            "✅ Спасибо! Остался один шаг — выбери удобное время получения материалов (ЧЧ:ММ)."
+        )
+        await q.message.reply_text("Выбери время:", reply_markup=menus.kb_enroll_time())
+
+    async def tz_pick(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        q = update.callback_query
+        await q.answer()
+        val = q.data.split(":", 1)[-1]
+        if val == "custom":
+            user_svc.set_step(q.from_user.id, STEP_WAIT_TZ, {})
+            await q.edit_message_text(
+                "Ок. Введи часовой пояс в формате IANA, например Europe/Moscow, Asia/Yekaterinburg."
+            )
+            return
+
+        try:
+            ZoneInfo(val)
+        except Exception:
+            await q.edit_message_text("Не смог распознать часовой пояс. Выбери из списка или нажми «Другое».")
+            return
+
+        user_svc.set_timezone(q.from_user.id, val)
+        st = user_svc.get_step(q.from_user.id) or {}
+        payload = st.get("payload_json") or {}
+        if isinstance(payload, str):
+            try:
+                payload = json.loads(payload)
+            except Exception:
+                payload = {}
+        after_tz = payload.get("after_tz")
+
+        # If user initiated "change_time" but had no tz yet, continue to time input
+        if after_tz == "change_time":
+            user_svc.set_step(q.from_user.id, STEP_WAIT_TIME, {})
+            await q.edit_message_text("✅ Часовой пояс сохранён. Теперь введи новое время (ЧЧ:ММ).")
+            await q.message.reply_text("Введи время:", reply_markup=menus.kb_back_only())
+            return
+
+        prof = analytics.profile(q.from_user.id)
+        if prof.get("enrolled"):
+            user_svc.set_step(q.from_user.id, None)
+            await q.edit_message_text("✅ Часовой пояс сохранён.")
+            await q.message.reply_text(
+                "Главное меню 👇", reply_markup=menus.kb_main(_is_admin(q.from_user.id))
+            )
+            return
+
+        user_svc.set_step(q.from_user.id, STEP_ENROLL_TIME, {})
+        await q.edit_message_text("✅ Часовой пояс сохранён. Теперь выбери время доставки материалов.")
+        await q.message.reply_text("Выбери время:", reply_markup=menus.kb_enroll_time())
+
+    async def enroll_time_pick(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        q = update.callback_query
+        await q.answer()
+        value = q.data.replace(cb.ENROLL_TIME_PREFIX, "", 1)
+
+        if value == "custom":
+            user_svc.set_step(q.from_user.id, STEP_ENROLL_TIME, {"custom": True})
+            await q.edit_message_text("Ок. Введи время в формате ЧЧ:ММ (например 09:30).")
+            return
+
+        user_svc.enroll_user(q.from_user.id, value)
+        user_svc.set_step(q.from_user.id, None)
+        await q.edit_message_text(f"✅ Записал! Время доставки: {value}")
+        await q.message.reply_text(
+            "Главное меню 👇", reply_markup=menus.kb_main(_is_admin(q.from_user.id))
+        )
+
+    # ----------------------------
+    # Habits callbacks (frequency selection, done/skip, manage)
+    # ----------------------------
+    async def habit_freq_pick(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        q = update.callback_query
+        await q.answer()
+        if not habit_svc:
+            await q.edit_message_text("❌ HabitService не подключён.")
+            return
+
+        freq = q.data.split(":", 2)[-1]
+        st = user_svc.get_step(q.from_user.id) or {}
+        payload = st.get("payload_json") or {}
+        if isinstance(payload, str):
+            try:
+                payload = json.loads(payload)
+            except Exception:
+                payload = {}
+
+        title = (payload.get("title") or "").strip()
+        remind_time = (payload.get("remind_time") or "").strip()
+        if not title or not remind_time:
+            user_svc.set_step(q.from_user.id, None)
+            await q.edit_message_text("⚠️ Не смог завершить создание (нет данных). Попробуй ещё раз.")
+            return
+
+        habit_id = habit_svc.create(q.from_user.id, title, remind_time, freq)
+        user_svc.set_step(q.from_user.id, None)
+
+        # Plan occurrences/outbox for the next days right away.
+        try:
+            if habit_schedule:
+                habit_schedule.schedule_due_jobs()
+        except Exception:
+            pass
+
+        await q.edit_message_text(f"✅ Привычка создана!\n\n#{habit_id} — {title}\n⏰ {remind_time} · 📅 {freq}")
+        await q.message.reply_text("Меню привычек 👇", reply_markup=menus.kb_habits())
+
+    async def habit_done(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        q = update.callback_query
+        await q.answer()
+        if not habit_svc:
+            await q.edit_message_text("❌ HabitService не подключён.")
+            return
+        try:
+            occ_id = int(q.data.split(":")[-1])
+        except Exception:
+            return
+
+        ok = habit_svc.mark_done(q.from_user.id, occ_id)
+        if ok:
+            pts = habit_svc.bonus_points()
+            await q.edit_message_text(f"✅ Отлично! Засчитано. +{pts} балл(ов) 🎉")
+        else:
+            await q.edit_message_text("⚠️ Уже было отмечено или недоступно.")
+
+    async def habit_skip(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        q = update.callback_query
+        await q.answer()
+        if not habit_svc:
+            await q.edit_message_text("❌ HabitService не подключён.")
+            return
+        try:
+            occ_id = int(q.data.split(":")[-1])
+        except Exception:
+            return
+        ok = habit_svc.mark_skipped(q.from_user.id, occ_id)
+        if ok:
+            await q.edit_message_text("Ок, пропуск записал.")
+        else:
+            await q.edit_message_text("⚠️ Уже было отмечено или недоступно.")
+
+    async def habit_toggle(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        q = update.callback_query
+        await q.answer()
+        if not habit_svc:
+            await q.edit_message_text("❌ HabitService не подключён.")
+            return
+        try:
+            hid = int(q.data.split(":")[-1])
+        except Exception:
+            return
+        ok = habit_svc.toggle(q.from_user.id, hid)
+        if ok:
+            await q.edit_message_text("✅ Обновил. Открой «Мои привычки» ещё раз, чтобы увидеть актуальный статус.")
+            try:
+                if habit_schedule:
+                    habit_schedule.schedule_due_jobs()
+            except Exception:
+                pass
+        else:
+            await q.edit_message_text("⚠️ Не нашёл привычку.")
+
+    async def habit_delete(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        q = update.callback_query
+        await q.answer()
+        if not habit_svc:
+            await q.edit_message_text("❌ HabitService не подключён.")
+            return
+        try:
+            hid = int(q.data.split(":")[-1])
+        except Exception:
+            return
+        ok = habit_svc.delete(q.from_user.id, hid)
+        if ok:
+            await q.edit_message_text("🗑 Удалил. Открой «Мои привычки» ещё раз.")
+        else:
+            await q.edit_message_text("⚠️ Не нашёл привычку.")
+
+    # ----------------------------
+    # Text input steps (name / time / tz / custom enroll time)
+    # ----------------------------
+    async def on_step_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        u = update.effective_user
+        uid = u.id
+        text = (update.effective_message.text or "").strip()
+
+        # If another feature is waiting for free-form text (quest answer, AI chat,
+        # questionnaire comment, admin wizard, etc.), don't intercept it here.
+        # We only handle explicit menu navigation buttons.
+        st_any = user_svc.get_step(uid)
+        user_steps = {
+            STEP_WAIT_NAME,
+            STEP_WAIT_TIME,
+            STEP_ENROLL_TIME,
+            STEP_PD_CONSENT,
+            STEP_WAIT_TZ,
+            STEP_HABIT_WAIT_TITLE,
+            STEP_HABIT_WAIT_TIME,
+            STEP_HABIT_WAIT_FREQ,
+            STEP_HABIT_PICK_FOR_EDIT,
+            STEP_HABIT_EDIT_MENU,
+            STEP_HABIT_EDIT_TITLE,
+            STEP_HABIT_EDIT_TIME,
+            STEP_HABIT_EDIT_FREQ,
+            STEP_HABIT_PICK_FOR_DELETE,
+            STEP_HABIT_DELETE_CONFIRM,
+        }
+        nav_texts = {
+            texts.MENU_DAY,
+            texts.MENU_PROGRESS,
+            texts.MENU_SETTINGS,
+            texts.MENU_HELP,
+            texts.MENU_ADMIN,
+            texts.BTN_BACK,
+            texts.DAY_QUOTE,
+            texts.DAY_PIC,
+            texts.DAY_TIP,
+            texts.DAY_BOOK,
+            texts.DAY_FILM,
+            texts.DAY_MATERIALS_NOW,
+            texts.PROGRESS_REFRESH,
+            texts.SETTINGS_TIME,
+            texts.SETTINGS_NAME,
+            texts.SETTINGS_TZ,
+            texts.SETTINGS_HABITS,
+            texts.HABITS_CREATE,
+            texts.HABITS_LIST,
+            texts.HABITS_EDIT,
+            texts.HABITS_DELETE,
+        }
+        if st_any and st_any.get("step") and st_any.get("step") not in user_steps:
+            if text in nav_texts:
+                # User explicitly navigates away — cancel the pending flow.
+                try:
+                    user_svc.set_step(uid, None)
+                except Exception:
+                    pass
+            else:
+                return
+
+        step = user_svc.get_step(uid) or {}
+        cur = step.get("step")
+        if not cur:
+            return
+
+        if text == texts.BTN_BACK:
+            user_svc.set_step(uid, None)
+            # If user is inside habits flow, return to habits menu; otherwise go to main.
+            if cur and str(cur).startswith("habit_"):
+                await update.effective_message.reply_text(
+                    "Меню привычек 👇",
+                    reply_markup=menus.kb_habits(),
+                )
+            else:
+                await update.effective_message.reply_text(
+                    "Главное меню 👇", reply_markup=menus.kb_main(_is_admin(uid))
+                )
+            raise ApplicationHandlerStop
+
+        if cur == STEP_WAIT_NAME:
+            name = text[:64]
+            user_svc.update_display_name(uid, name)
+            user_svc.set_step(uid, None)
+            await update.effective_message.reply_text(
+                f"✅ Ок, буду звать тебя: {name}",
+                reply_markup=menus.kb_main(_is_admin(uid)),
+            )
+            raise ApplicationHandlerStop
+
+        if cur in (STEP_WAIT_TIME, STEP_ENROLL_TIME):
+            hhmm = _parse_hhmm(text)
+            if not hhmm:
+                await update.effective_message.reply_text(
+                    "Формат времени: ЧЧ:ММ (например 09:30). Часы 00–23, минуты 00–59."
+                )
+                raise ApplicationHandlerStop
+
+            if cur == STEP_WAIT_TIME:
+                user_svc.update_delivery_time(uid, hhmm)
+                user_svc.set_step(uid, None)
+                await update.effective_message.reply_text(
+                    f"✅ Время обновлено: {hhmm}",
+                    reply_markup=menus.kb_main(_is_admin(uid)),
+                )
+                raise ApplicationHandlerStop
+
+            # enroll time
+            user_svc.enroll_user(uid, hhmm)
+            user_svc.set_step(uid, None)
+            await update.effective_message.reply_text(
+                f"✅ Записал! Время доставки: {hhmm}",
+                reply_markup=menus.kb_main(_is_admin(uid)),
+            )
+            raise ApplicationHandlerStop
+
+        if cur == STEP_WAIT_TZ:
+            try:
+                ZoneInfo(text)
+            except Exception:
+                await update.effective_message.reply_text(
+                    "Не похоже на IANA timezone. Пример: Europe/Moscow, Asia/Yekaterinburg."
+                )
+                raise ApplicationHandlerStop
+            user_svc.set_timezone(uid, text)
+            user_svc.set_step(uid, None)
+            await update.effective_message.reply_text(
+                f"✅ Часовой пояс сохранён: {text}",
+                reply_markup=menus.kb_main(_is_admin(uid)),
+            )
+            raise ApplicationHandlerStop
+
+        # ----------------------------
+        # Habits wizard (title -> time -> frequency)
+        # ----------------------------
+        if cur == STEP_HABIT_WAIT_TITLE:
+            title = (text or "").strip()
+            if not title:
+                await update.effective_message.reply_text("Название не должно быть пустым. Напиши ещё раз.")
+                raise ApplicationHandlerStop
+            user_svc.set_step(uid, STEP_HABIT_WAIT_TIME, {"title": title})
+            await update.effective_message.reply_text(
+                "⏰ Во сколько напоминать? Введи время в формате ЧЧ:ММ (например 09:30).",
+                reply_markup=menus.kb_back_only(),
+            )
+            raise ApplicationHandlerStop
+
+        if cur == STEP_HABIT_WAIT_TIME:
+            hhmm = _parse_hhmm(text)
+            if not hhmm:
+                await update.effective_message.reply_text(
+                    "Неверное время. Формат: ЧЧ:ММ (например 09:30). Часы 00–23, минуты 00–59. Попробуй ещё раз."
+                )
+                raise ApplicationHandlerStop
+            payload = step.get("payload_json") or {}
+            if isinstance(payload, str):
+                try:
+                    payload = json.loads(payload)
+                except Exception:
+                    payload = {}
+            payload["remind_time"] = hhmm
+            user_svc.set_step(uid, STEP_HABIT_WAIT_FREQ, payload)
+            await update.effective_message.reply_text(
+                "📅 Выбери периодичность:",
+                reply_markup=menus.kb_habit_frequency(),
+            )
+            raise ApplicationHandlerStop
+
+        if cur == STEP_HABIT_WAIT_FREQ:
+            # Frequency is chosen via inline buttons; text input isn't expected.
+            await update.effective_message.reply_text(
+                "Нажми кнопку с периодичностью 👇",
+                reply_markup=menus.kb_habit_frequency(),
+            )
+            raise ApplicationHandlerStop
+
+        # ----------------------------
+        # Habits management (reply-menu)
+        # ----------------------------
+        if cur == STEP_HABIT_PICK_FOR_EDIT:
+            if not habit_svc:
+                user_svc.set_step(uid, None)
+                await update.effective_message.reply_text("❌ HabitService не подключён.", reply_markup=menus.kb_habits())
+                raise ApplicationHandlerStop
+            hid = _extract_habit_id(text)
+            if not hid:
+                await update.effective_message.reply_text("Введи номер привычки (например 1 или #1).")
+                raise ApplicationHandlerStop
+            h = habit_svc.habits.get(hid)
+            if not h or int(h.get("user_id")) != int(uid):
+                await update.effective_message.reply_text("Не нашёл такую привычку у тебя. Введи номер из списка.")
+                raise ApplicationHandlerStop
+            user_svc.set_step(uid, STEP_HABIT_EDIT_MENU, {"habit_id": int(hid)})
+            await update.effective_message.reply_text(
+                f"✏️ Изменяем привычку #{hid}: {h.get('title')}",
+                reply_markup=menus.kb_habit_edit_menu(),
+            )
+            raise ApplicationHandlerStop
+
+        if cur == STEP_HABIT_EDIT_MENU:
+            payload = step.get("payload_json") or {}
+            if isinstance(payload, str):
+                try:
+                    payload = json.loads(payload)
+                except Exception:
+                    payload = {}
+            hid = int(payload.get("habit_id") or 0)
+            if text == texts.HABIT_EDIT_NAME:
+                user_svc.set_step(uid, STEP_HABIT_EDIT_TITLE, {"habit_id": hid})
+                await update.effective_message.reply_text(
+                    "Введи новое название привычки:",
+                    reply_markup=menus.kb_back_only(),
+                )
+                raise ApplicationHandlerStop
+            if text == texts.HABIT_EDIT_TIME:
+                user_svc.set_step(uid, STEP_HABIT_EDIT_TIME, {"habit_id": hid})
+                await update.effective_message.reply_text(
+                    "Введи новое время (ЧЧ:ММ):",
+                    reply_markup=menus.kb_back_only(),
+                )
+                raise ApplicationHandlerStop
+            if text == texts.HABIT_EDIT_FREQ:
+                user_svc.set_step(uid, STEP_HABIT_EDIT_FREQ, {"habit_id": hid})
+                await update.effective_message.reply_text(
+                    "Выбери новую периодичность:",
+                    reply_markup=menus.kb_habit_frequency_reply(),
+                )
+                raise ApplicationHandlerStop
+
+            await update.effective_message.reply_text(
+                "Выбери, что изменить: название / время / периодичность.",
+                reply_markup=menus.kb_habit_edit_menu(),
+            )
+            raise ApplicationHandlerStop
+
+        if cur == STEP_HABIT_EDIT_TITLE:
+            if not habit_svc:
+                user_svc.set_step(uid, None)
+                await update.effective_message.reply_text("❌ HabitService не подключён.", reply_markup=menus.kb_habits())
+                raise ApplicationHandlerStop
+            new_title = (text or "").strip()
+            if not new_title:
+                await update.effective_message.reply_text("Название не должно быть пустым. Напиши ещё раз.")
+                raise ApplicationHandlerStop
+            payload = step.get("payload_json") or {}
+            if isinstance(payload, str):
+                try:
+                    payload = json.loads(payload)
+                except Exception:
+                    payload = {}
+            hid = int(payload.get("habit_id") or 0)
+            ok = habit_svc.update_title(uid, hid, new_title)
+            user_svc.set_step(uid, None)
+            await update.effective_message.reply_text(
+                "✅ Название обновлено." if ok else "❌ Не смог обновить (проверь номер привычки).",
+                reply_markup=menus.kb_habits(),
+            )
+            raise ApplicationHandlerStop
+
+        if cur == STEP_HABIT_EDIT_TIME:
+            if not habit_svc:
+                user_svc.set_step(uid, None)
+                await update.effective_message.reply_text("❌ HabitService не подключён.", reply_markup=menus.kb_habits())
+                raise ApplicationHandlerStop
+            hhmm = _parse_hhmm(text)
+            if not hhmm:
+                await update.effective_message.reply_text(
+                    "Неверное время. Формат: ЧЧ:ММ (например 09:30). Часы 00–23, минуты 00–59. Попробуй ещё раз.",
+                    reply_markup=menus.kb_back_only(),
+                )
+                raise ApplicationHandlerStop
+            payload = step.get("payload_json") or {}
+            if isinstance(payload, str):
+                try:
+                    payload = json.loads(payload)
+                except Exception:
+                    payload = {}
+            hid = int(payload.get("habit_id") or 0)
+            ok = habit_svc.update_time(uid, hid, hhmm)
+            if ok and habit_schedule:
+                # Cancelled jobs/occurrences are handled inside HabitService; now re-plan.
+                habit_schedule.schedule_due_jobs()
+            user_svc.set_step(uid, None)
+            await update.effective_message.reply_text(
+                f"✅ Время обновлено: {hhmm}" if ok else "❌ Не смог обновить (проверь номер привычки).",
+                reply_markup=menus.kb_habits(),
+            )
+            raise ApplicationHandlerStop
+
+        if cur == STEP_HABIT_EDIT_FREQ:
+            if not habit_svc:
+                user_svc.set_step(uid, None)
+                await update.effective_message.reply_text("❌ HabitService не подключён.", reply_markup=menus.kb_habits())
+                raise ApplicationHandlerStop
+            m = {
+                "Ежедневно": "daily",
+                "По будням": "weekdays",
+                "По выходным": "weekends",
+            }
+            freq = m.get((text or "").strip())
+            if not freq:
+                await update.effective_message.reply_text(
+                    "Выбери периодичность кнопкой ниже 👇",
+                    reply_markup=menus.kb_habit_frequency_reply(),
+                )
+                raise ApplicationHandlerStop
+            payload = step.get("payload_json") or {}
+            if isinstance(payload, str):
+                try:
+                    payload = json.loads(payload)
+                except Exception:
+                    payload = {}
+            hid = int(payload.get("habit_id") or 0)
+            ok = habit_svc.update_frequency(uid, hid, freq)
+            if ok and habit_schedule:
+                habit_schedule.schedule_due_jobs()
+            user_svc.set_step(uid, None)
+            await update.effective_message.reply_text(
+                "✅ Периодичность обновлена." if ok else "❌ Не смог обновить (проверь номер привычки).",
+                reply_markup=menus.kb_habits(),
+            )
+            raise ApplicationHandlerStop
+
+        if cur == STEP_HABIT_PICK_FOR_DELETE:
+            if not habit_svc:
+                user_svc.set_step(uid, None)
+                await update.effective_message.reply_text("❌ HabitService не подключён.", reply_markup=menus.kb_habits())
+                raise ApplicationHandlerStop
+            hid = _extract_habit_id(text)
+            if not hid:
+                await update.effective_message.reply_text("Введи номер привычки (например 1 или #1).")
+                raise ApplicationHandlerStop
+            h = habit_svc.habits.get(hid)
+            if not h or int(h.get("user_id")) != int(uid):
+                await update.effective_message.reply_text("Не нашёл такую привычку у тебя. Введи номер из списка.")
+                raise ApplicationHandlerStop
+            user_svc.set_step(uid, STEP_HABIT_DELETE_CONFIRM, {"habit_id": int(hid)})
+            await update.effective_message.reply_text(
+                f"🗑 Удалить привычку #{hid}: {h.get('title')}?",
+                reply_markup=menus.kb_yes_no(),
+            )
+            raise ApplicationHandlerStop
+
+        if cur == STEP_HABIT_DELETE_CONFIRM:
+            payload = step.get("payload_json") or {}
+            if isinstance(payload, str):
+                try:
+                    payload = json.loads(payload)
+                except Exception:
+                    payload = {}
+            hid = int(payload.get("habit_id") or 0)
+            if text == texts.NO:
+                user_svc.set_step(uid, None)
+                await update.effective_message.reply_text("Ок, не удаляю.", reply_markup=menus.kb_habits())
+                raise ApplicationHandlerStop
+            if text != texts.YES:
+                await update.effective_message.reply_text("Нажми «Да» или «Нет».", reply_markup=menus.kb_yes_no())
+                raise ApplicationHandlerStop
+            ok = False
+            try:
+                ok = bool(habit_svc and habit_svc.delete(uid, hid))
+            except Exception:
+                ok = False
+            if ok and habit_schedule:
+                habit_schedule.schedule_due_jobs()
+            user_svc.set_step(uid, None)
+            await update.effective_message.reply_text(
+                "✅ Привычка удалена." if ok else "❌ Не смог удалить (проверь номер привычки).",
+                reply_markup=menus.kb_habits(),
+            )
+            raise ApplicationHandlerStop
+
+    # ----------------------------
+    # Main navigation (ReplyKeyboard)
+    # ----------------------------
+    async def on_menu_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        u = update.effective_user
+        uid = u.id
+        text = (update.effective_message.text or "").strip()
+
+        # Exit AI chat mode on navigation
+        if learning and text in (
+            texts.MENU_DAY,
+            texts.MENU_PROGRESS,
+            texts.MENU_SETTINGS,
+            texts.MENU_HELP,
+            texts.MENU_ADMIN,
+            texts.BTN_BACK,
+            texts.SETTINGS_HABITS,
+            texts.HABITS_CREATE,
+            texts.HABITS_LIST,
+            texts.HABITS_EDIT,
+            texts.HABITS_DELETE,
+        ):
+            try:
+                learning.state.clear_state(uid)
+            except Exception:
+                pass
+
+        # Ensure user exists
+        display_name = u.first_name or u.full_name or (u.username or "")
+        user_svc.ensure_user(uid, u.username, display_name)
+
+        # Onboarding gate
+        if not user_svc.has_pd_consent(uid):
+            user_svc.set_step(uid, STEP_PD_CONSENT, {})
+            await update.effective_message.reply_text(
+                "👋 Перед началом нужно согласие на обработку персональных данных.",
+                reply_markup=menus.kb_consent(),
+            )
+            raise ApplicationHandlerStop
+
+        if not user_svc.get_timezone(uid):
+            # If user clicked "change time" before setting tz, remember it
+            after_tz = "change_time" if text == texts.SETTINGS_TIME else None
+            user_svc.set_step(uid, STEP_WAIT_TZ, {"after_tz": after_tz} if after_tz else {})
+            await update.effective_message.reply_text(
+                "🕒 Выбери часовой пояс (это обязательно, чтобы материалы приходили вовремя):",
+                reply_markup=menus.kb_timezone(),
+            )
+            raise ApplicationHandlerStop
+
+        prof = analytics.profile(uid)
+
+        # If another feature is waiting for free-form text (quest answer / AI chat,
+        # questionnaire comment, admin wizard, etc.), don't intercept it here.
+        # Only explicit menu navigation buttons are handled by this router.
+        st_any = user_svc.get_step(uid)
+        user_steps = {
+            STEP_WAIT_NAME,
+            STEP_WAIT_TIME,
+            STEP_ENROLL_TIME,
+            STEP_PD_CONSENT,
+            STEP_WAIT_TZ,
+            STEP_HABIT_WAIT_TITLE,
+            STEP_HABIT_WAIT_TIME,
+            STEP_HABIT_WAIT_FREQ,
+            STEP_HABIT_PICK_FOR_EDIT,
+            STEP_HABIT_EDIT_MENU,
+            STEP_HABIT_EDIT_TITLE,
+            STEP_HABIT_EDIT_TIME,
+            STEP_HABIT_EDIT_FREQ,
+            STEP_HABIT_PICK_FOR_DELETE,
+            STEP_HABIT_DELETE_CONFIRM,
+        }
+        nav_texts = {
+            texts.MENU_DAY,
+            texts.MENU_PROGRESS,
+            texts.MENU_SETTINGS,
+            texts.MENU_HELP,
+            texts.MENU_ADMIN,
+            texts.BTN_BACK,
+            texts.DAY_QUOTE,
+            texts.DAY_PIC,
+            texts.DAY_TIP,
+            texts.DAY_BOOK,
+            texts.DAY_FILM,
+            texts.DAY_MATERIALS_NOW,
+            texts.PROGRESS_REFRESH,
+            texts.SETTINGS_TIME,
+            texts.SETTINGS_NAME,
+            texts.SETTINGS_TZ,
+            texts.SETTINGS_HABITS,
+            texts.HABITS_CREATE,
+            texts.HABITS_LIST,
+            texts.HABITS_EDIT,
+            texts.HABITS_DELETE,
+        }
+        if st_any and st_any.get("step") and st_any.get("step") not in user_steps and text not in nav_texts:
+            return
+        if st_any and st_any.get("step") and st_any.get("step") not in user_steps and text in nav_texts:
+            # User explicitly navigates away — cancel the pending flow.
+            try:
+                user_svc.set_step(uid, None)
+            except Exception:
+                pass
+
+        # Global back
+        if text == texts.BTN_BACK:
+            await update.effective_message.reply_text(
+                "Главное меню 👇", reply_markup=menus.kb_main(_is_admin(uid))
+            )
+            raise ApplicationHandlerStop
+
+        if text == texts.MENU_DAY:
+            if not prof.get("enrolled"):
+                user_svc.set_step(uid, STEP_ENROLL_TIME, {})
+                await update.effective_message.reply_text(
+                    "⏰ Сначала выбери время доставки материалов:",
+                    reply_markup=menus.kb_enroll_time(),
+                )
+                raise ApplicationHandlerStop
+            day_index = schedule.current_day_index(uid)
+            await update.effective_message.reply_text(
+                f"🗓 Мой день\nКурс: Курс на счастье\nДень: {day_index}\nВремя: {prof['delivery_time']}\n\nВыбери материал:",
+                reply_markup=menus.kb_day(),
+            )
+            raise ApplicationHandlerStop
+
+        if text == texts.MENU_PROGRESS:
+            await update.effective_message.reply_text(
+                f"📊 Мой прогресс\nБаллы: {prof['points']}\nДней завершено: {prof['done_days']}",
+                reply_markup=menus.kb_progress(),
+            )
+            raise ApplicationHandlerStop
+
+        if text == texts.MENU_SETTINGS:
+            time_text = prof["delivery_time"] if prof.get("enrolled") else "не указано (нужна запись /enroll)"
+            await update.effective_message.reply_text(
+                f"⚙️ Настройки\nИмя: {prof['display_name']}\nВами указанное время: {time_text}\n\nВыбери действие:",
+                reply_markup=menus.kb_settings(),
+            )
+            raise ApplicationHandlerStop
+
+        if text == texts.MENU_HELP:
+            await update.effective_message.reply_text(_format_faq(), reply_markup=menus.kb_back_only())
+            raise ApplicationHandlerStop
+
+        # Day submenu
+        if text == texts.DAY_MATERIALS_NOW:
+            day_index = schedule.current_day_index(uid)
+            created = schedule.enqueue_day_now(uid, day_index)
+            await update.effective_message.reply_text(
+                f"✅ Ок! Jobs created: {created}. Подожди минуту.",
+                reply_markup=menus.kb_day(),
+            )
+            raise ApplicationHandlerStop
+
+        if text in (texts.DAY_QUOTE, texts.DAY_PIC, texts.DAY_TIP, texts.DAY_BOOK, texts.DAY_FILM):
+            if not daily:
+                await update.effective_message.reply_text("❌ DailyPackService не подключён.", reply_markup=menus.kb_day())
+                raise ApplicationHandlerStop
+
+            kind_map = {
+                texts.DAY_PIC: "image",
+                texts.DAY_TIP: "tip",
+                texts.DAY_BOOK: "book",
+                texts.DAY_FILM: "film",
+                texts.DAY_QUOTE: "quote",
+            }
+            kind = kind_map[text]
+
+            pack = daily.get_today_pack()
+            if not pack:
+                await asyncio.to_thread(daily.generate_set_for_today, trigger="on_demand", force=False)
+                pack = daily.get_today_pack()
+
+            if not pack:
+                await update.effective_message.reply_text(
+                    "⚠️ Пакет дня пока не готов. Попробуй ещё раз через минуту.",
+                    reply_markup=menus.kb_day(),
+                )
+                raise ApplicationHandlerStop
+
+            item = next((x for x in pack["items"] if x.get("kind") == kind), None)
+            if not item:
+                await update.effective_message.reply_text("⚠️ Элемент не найден.", reply_markup=menus.kb_day())
+                raise ApplicationHandlerStop
+
+            if kind == "image":
+                payload = item.get("payload_json") or {}
+                if isinstance(payload, str):
+                    try:
+                        payload = json.loads(payload)
+                    except Exception:
+                        payload = {}
+                photo_file_id = payload.get("photo_file_id")
+                img_path = payload.get("image_path")
+
+                # 1) Prefer Telegram file_id (fastest + no local storage).
+                if photo_file_id:
+                    try:
+                        await update.effective_message.reply_photo(photo=photo_file_id)
+                    except Exception as e:
+                        await update.effective_message.reply_text(f"⚠️ Не смог отправить картинку по file_id: {e}")
+
+                # 2) Fallback: send local file, then cache file_id back to DB for the next time.
+                elif img_path:
+                    try:
+                        with open(img_path, "rb") as f:
+                            msg = await update.effective_message.reply_photo(photo=f)
+                        try:
+                            if daily and hasattr(daily, "repo") and item.get("id") and msg and getattr(msg, "photo", None):
+                                fid = msg.photo[-1].file_id
+                                await asyncio.to_thread(
+                                    daily.repo.set_item_photo_file_id,
+                                    item_id=int(item["id"]),
+                                    photo_file_id=fid,
+                                )
+                        except Exception:
+                            pass
+                    except Exception as e:
+                        await update.effective_message.reply_text(f"⚠️ Не смог открыть/отправить файл картинки: {img_path}\n{e}")
+
+                # 3) If neither is present — we just send the text (no warning).
+
+            await update.effective_message.reply_text(item["content_text"], reply_markup=menus.kb_day())
+            raise ApplicationHandlerStop
+
+        # Progress submenu
+        if text == texts.PROGRESS_REFRESH:
+            prof = analytics.profile(uid)
+            await update.effective_message.reply_text(
+                f"📊 Мой прогресс\nБаллы: {prof['points']}\nДней завершено: {prof['done_days']}",
+                reply_markup=menus.kb_progress(),
+            )
+            raise ApplicationHandlerStop
+
+        # Settings submenu
+        if text == texts.SETTINGS_HABITS:
+            await update.effective_message.reply_text(
+                "✅ Мои привычки\n\nВыбери действие:",
+                reply_markup=menus.kb_habits(),
+            )
+            raise ApplicationHandlerStop
+
+        if text == texts.HABITS_CREATE:
+            user_svc.set_step(uid, STEP_HABIT_WAIT_TITLE, {})
+            await update.effective_message.reply_text(
+                "➕ Создаём привычку!\n\nКак она называется?",
+                reply_markup=menus.kb_back_only(),
+            )
+            raise ApplicationHandlerStop
+
+        if text == texts.HABITS_LIST:
+            if not habit_svc:
+                await update.effective_message.reply_text("❌ HabitService не подключён.", reply_markup=menus.kb_habits())
+                raise ApplicationHandlerStop
+            habits = habit_svc.list_for_user(uid)
+            if not habits:
+                await update.effective_message.reply_text("У тебя пока нет привычек. Нажми «Создать привычку».", reply_markup=menus.kb_habits())
+                raise ApplicationHandlerStop
+
+            lines = []
+            for h in habits:
+                st = "🟢" if h.get("is_active") else "⚪️"
+                lines.append(f"{st} #{h['id']} — {h['title']} — {h['remind_time']} — {h['frequency']}")
+
+            await update.effective_message.reply_text(
+                "📋 Твои привычки:\n\n" + "\n".join(lines) + "\n\nДля изменения или удаления — выбери действие в меню привычек.",
+                reply_markup=menus.kb_habits(),
+            )
+            raise ApplicationHandlerStop
+
+        if text == texts.HABITS_EDIT:
+            if not habit_svc:
+                await update.effective_message.reply_text("❌ HabitService не подключён.", reply_markup=menus.kb_habits())
+                raise ApplicationHandlerStop
+            habits = habit_svc.list_for_user(uid)
+            if not habits:
+                await update.effective_message.reply_text("У тебя пока нет привычек. Нажми «Создать привычку».", reply_markup=menus.kb_habits())
+                raise ApplicationHandlerStop
+            lines = []
+            for h in habits:
+                lines.append(f"#{h['id']} — {h['title']} — {h['remind_time']} — {h['frequency']}")
+            user_svc.set_step(uid, STEP_HABIT_PICK_FOR_EDIT, {})
+            await update.effective_message.reply_text(
+                "✏️ Выбери привычку для изменения.\n\n" + "\n".join(lines) + "\n\nВведи номер (например 1 или #1):",
+                reply_markup=menus.kb_back_only(),
+            )
+            raise ApplicationHandlerStop
+
+        if text == texts.HABITS_DELETE:
+            if not habit_svc:
+                await update.effective_message.reply_text("❌ HabitService не подключён.", reply_markup=menus.kb_habits())
+                raise ApplicationHandlerStop
+            habits = habit_svc.list_for_user(uid)
+            if not habits:
+                await update.effective_message.reply_text("У тебя пока нет привычек. Нажми «Создать привычку».", reply_markup=menus.kb_habits())
+                raise ApplicationHandlerStop
+            lines = []
+            for h in habits:
+                lines.append(f"#{h['id']} — {h['title']} — {h['remind_time']} — {h['frequency']}")
+            user_svc.set_step(uid, STEP_HABIT_PICK_FOR_DELETE, {})
+            await update.effective_message.reply_text(
+                "🗑 Выбери привычку для удаления.\n\n" + "\n".join(lines) + "\n\nВведи номер (например 1 или #1):",
+                reply_markup=menus.kb_back_only(),
+            )
+            raise ApplicationHandlerStop
+
+        if text == texts.SETTINGS_TZ:
+            user_svc.set_step(uid, STEP_WAIT_TZ, {})
+            await update.effective_message.reply_text("🕒 Выбери часовой пояс:", reply_markup=menus.kb_timezone())
+            raise ApplicationHandlerStop
+
+        if text == texts.SETTINGS_TIME:
+            user_svc.set_step(uid, STEP_WAIT_TIME, {})
+            await update.effective_message.reply_text(
+                "Введи новое время (ЧЧ:ММ), оно применится ко всем будущим рассылкам.",
+                reply_markup=menus.kb_back_only(),
+            )
+            raise ApplicationHandlerStop
+
+        if text == texts.SETTINGS_NAME:
+            user_svc.set_step(uid, STEP_WAIT_NAME, {})
+            await update.effective_message.reply_text(
+                "Как тебя называть? Напиши имя сообщением.",
+                reply_markup=menus.kb_back_only(),
+            )
+            raise ApplicationHandlerStop
+
+        # Unknown text
+        await update.effective_message.reply_text(
+            "Выбери пункт меню 👇", reply_markup=menus.kb_main(_is_admin(uid))
+        )
+        raise ApplicationHandlerStop
+
+    # ----------------------------
+    # Register handlers
+    # ----------------------------
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("enroll", enroll_cmd))
+
+    app.add_handler(CallbackQueryHandler(consent_pick, pattern=r"^consent:(yes|no)$"))
+    app.add_handler(CallbackQueryHandler(tz_pick, pattern=r"^tz:.*"))
+    app.add_handler(CallbackQueryHandler(enroll_time_pick, pattern=r"^" + re.escape(cb.ENROLL_TIME_PREFIX)))
+
+    # Habits
+    app.add_handler(CallbackQueryHandler(habit_freq_pick, pattern=r"^habit:freq:(daily|weekdays|weekends)$"))
+    app.add_handler(CallbackQueryHandler(habit_done, pattern=r"^habit:done:\d+$"))
+    app.add_handler(CallbackQueryHandler(habit_skip, pattern=r"^habit:skip:\d+$"))
+    app.add_handler(CallbackQueryHandler(habit_toggle, pattern=r"^habit:toggle:\d+$"))
+    app.add_handler(CallbackQueryHandler(habit_delete, pattern=r"^habit:delete:\d+$"))
+
+    # Steps must run BEFORE the menu router
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_step_text), group=0)
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_menu_text), group=1)
