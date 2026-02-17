@@ -13,9 +13,34 @@ def register_learning_handlers(app, settings, services):
     learning = services["learning"]
     schedule = services["schedule"]
     ai = services.get("ai")
+    user_svc = services.get("user")
+    achievement_svc = services.get("achievement")
 
     AI_STEP = "ai_quest_followup"
     AI_CHAT_STEP = "ai_chat"
+
+    def _achievement_lines(rows: list[dict]) -> str | None:
+        if not rows:
+            return None
+        header = "🏆 Новая ачивка!" if len(rows) == 1 else "🏆 Новые ачивки!"
+        lines = [header]
+        for row in rows:
+            icon = (row.get("icon") or "🏅").strip() or "🏅"
+            title = (row.get("title") or "Ачивка").strip()
+            lines.append(f"• {icon} {title}")
+        return "\n".join(lines)
+
+    async def _notify_achievements(uid: int, context: ContextTypes.DEFAULT_TYPE):
+        if not achievement_svc:
+            return
+        try:
+            tz_name = user_svc.get_timezone(uid) if user_svc else None
+            rows = achievement_svc.evaluate(uid, user_timezone=tz_name)
+        except Exception:
+            return
+        text = _achievement_lines(rows)
+        if text:
+            await context.bot.send_message(chat_id=uid, text=text)
 
     # ----------------------------
     # Lesson viewed
@@ -40,6 +65,7 @@ def register_learning_handlers(app, settings, services):
         learning.points.add_points(q.from_user.id, "lesson_viewed", f"day:{day_index}", points)
         await q.edit_message_reply_markup(reply_markup=None)
         await context.bot.send_message(chat_id=q.from_user.id, text=f"✅ Просмотрено! +{points} баллов")
+        await _notify_achievements(q.from_user.id, context)
 
     # ----------------------------
     # Quest reply button
@@ -97,7 +123,7 @@ def register_learning_handlers(app, settings, services):
         if not text:
             await update.effective_message.reply_text("Просто напиши ответ сообщением в чат 🙂")
             return
-        await _submit(update, text)
+        await _submit(update, context, text)
 
     # ----------------------------
     # Plain text handler
@@ -111,12 +137,12 @@ def register_learning_handlers(app, settings, services):
             await _ai_chat(update, context, st)
             return
 
-        await _submit(update, update.effective_message.text.strip())
+        await _submit(update, context, update.effective_message.text.strip())
 
     # ----------------------------
     # Submit quest answer
     # ----------------------------
-    async def _submit(update: Update, text: str):
+    async def _submit(update: Update, context: ContextTypes.DEFAULT_TYPE, text: str):
         st = learning.state.get_state(update.effective_user.id)
         if not st or not st.get("payload_json"):
             return
@@ -135,6 +161,7 @@ def register_learning_handlers(app, settings, services):
 
         learning.submit_answer(update.effective_user.id, day_index, points, text)
         await update.effective_message.reply_text(f"✅ Ответ принят! +{points} баллов")
+        await _notify_achievements(update.effective_user.id, context)
 
         # ---------- AI FEEDBACK ----------
         try:

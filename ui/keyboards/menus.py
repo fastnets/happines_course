@@ -32,6 +32,13 @@ def kb_progress() -> ReplyKeyboardMarkup:
     )
 
 
+def kb_help() -> ReplyKeyboardMarkup:
+    return ReplyKeyboardMarkup(
+        [[KeyboardButton(texts.HELP_NOT_HELPED)], [KeyboardButton(texts.BTN_BACK)]],
+        resize_keyboard=True,
+    )
+
+
 def kb_settings() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
         [

@@ -56,6 +56,9 @@ STEP_PR_EDIT_DATETIME = "pr_edit_datetime"
 STEP_PR_PICK_FOR_DELETE = "pr_pick_for_delete"
 STEP_PR_DELETE_CONFIRM = "pr_delete_confirm"
 
+# Support
+STEP_SUPPORT_WAIT_TEXT = "support_wait_text"
+
 
 def _format_faq() -> str:
     try:
@@ -71,10 +74,12 @@ def register_user_handlers(app, settings: Settings, services: dict):
     learning = services.get("learning")
     daily = services.get("daily_pack")
     admin_svc = services.get("admin")
+    achievement_svc = services.get("achievement")
     habit_svc = services.get("habit")
     habit_schedule = services.get("habit_schedule")
     pr_svc = services.get("personal_reminder")
     pr_schedule = services.get("personal_reminder_schedule")
+    support_svc = services.get("support")
 
     def _is_admin(uid: int) -> bool:
         try:
@@ -134,6 +139,62 @@ def register_user_handlers(app, settings: Settings, services: dict):
             return dt.astimezone(tz).strftime("%d.%m.%Y %H:%M")
         except Exception:
             return "-"
+
+    def _progress_text(uid: int) -> str:
+        if analytics and hasattr(analytics, "progress_report"):
+            try:
+                return analytics.progress_report(uid)
+            except Exception:
+                pass
+        prof = analytics.profile(uid)
+        return f"📊 Мой прогресс\nБаллы: {prof['points']}\nДней завершено: {prof['done_days']}"
+
+    def _evaluate_achievements(uid: int) -> list[dict]:
+        if not achievement_svc:
+            return []
+        try:
+            return achievement_svc.evaluate(uid, user_svc.get_timezone(uid))
+        except Exception:
+            return []
+
+    def _achievement_lines(rows: list[dict]) -> str | None:
+        if not rows:
+            return None
+        header = "🏆 Новая ачивка!" if len(rows) == 1 else "🏆 Новые ачивки!"
+        lines = [header]
+        for row in rows:
+            icon = (row.get("icon") or "🏅").strip() or "🏅"
+            title = (row.get("title") or "Ачивка").strip()
+            description = (row.get("description") or "").strip()
+            line = f"• {icon} {title}"
+            if description:
+                line += f" — {description}"
+            lines.append(line)
+        return "\n".join(lines)
+
+    def _admin_ids() -> list[int]:
+        try:
+            if not admin_svc or not getattr(admin_svc, "admins", None):
+                return []
+            ids = admin_svc.admins.list_user_ids() or []
+            return [int(x) for x in ids]
+        except Exception:
+            return []
+
+    def _ticket_for_admin(ticket: dict, u) -> str:
+        username = f"@{u.username}" if getattr(u, "username", None) else "-"
+        name = (u.first_name or u.full_name or "").strip() or "Без имени"
+        text = (ticket.get("question_text") or "").strip()
+        tid = int(ticket.get("id") or 0)
+        uid = int(ticket.get("user_id") or 0)
+        return (
+            f"🆘 Новый тикет #{tid}\n"
+            f"Пользователь: {name} ({username})\n"
+            f"user_id: {uid}\n\n"
+            f"Сообщение:\n{text}\n\n"
+            f"Ответ: /reply_ticket {tid} <текст>\n"
+            f"Просмотр: /ticket {tid}"
+        )
 
     # ----------------------------
     # /start
@@ -396,6 +457,9 @@ def register_user_handlers(app, settings: Settings, services: dict):
         if ok:
             pts = habit_svc.bonus_points()
             await q.edit_message_text(f"✅ Отлично! Засчитано. +{pts} балл(ов) 🎉")
+            ach_text = _achievement_lines(_evaluate_achievements(q.from_user.id))
+            if ach_text:
+                await q.message.reply_text(ach_text)
         else:
             await q.edit_message_text("⚠️ Уже было отмечено или недоступно.")
 
@@ -488,12 +552,14 @@ def register_user_handlers(app, settings: Settings, services: dict):
             STEP_PR_EDIT_DATETIME,
             STEP_PR_PICK_FOR_DELETE,
             STEP_PR_DELETE_CONFIRM,
+            STEP_SUPPORT_WAIT_TEXT,
         }
         nav_texts = {
             texts.MENU_DAY,
             texts.MENU_PROGRESS,
             texts.MENU_SETTINGS,
             texts.MENU_HELP,
+            texts.HELP_NOT_HELPED,
             texts.MENU_ADMIN,
             texts.BTN_BACK,
             texts.DAY_QUOTE,
@@ -1043,6 +1109,49 @@ def register_user_handlers(app, settings: Settings, services: dict):
             )
             raise ApplicationHandlerStop
 
+        if cur == STEP_SUPPORT_WAIT_TEXT:
+            issue = (text or "").strip()
+            if len(issue) < 3:
+                await update.effective_message.reply_text(
+                    "Опиши проблему чуть подробнее (минимум 3 символа).",
+                    reply_markup=menus.kb_back_only(),
+                )
+                raise ApplicationHandlerStop
+
+            if not support_svc:
+                user_svc.set_step(uid, None)
+                await update.effective_message.reply_text(
+                    "⚠️ Сервис поддержки временно недоступен.",
+                    reply_markup=menus.kb_main(_is_admin(uid)),
+                )
+                raise ApplicationHandlerStop
+
+            ticket = support_svc.create_ticket(uid, issue)
+            user_svc.set_step(uid, None)
+            if not ticket:
+                await update.effective_message.reply_text(
+                    "⚠️ Не удалось создать тикет. Попробуй ещё раз чуть позже.",
+                    reply_markup=menus.kb_main(_is_admin(uid)),
+                )
+                raise ApplicationHandlerStop
+
+            tid = int(ticket.get("id") or 0)
+            await update.effective_message.reply_text(
+                f"✅ Принято. Тикет #{tid} передан администратору.\n"
+                "Когда будет ответ, я пришлю его сюда.",
+                reply_markup=menus.kb_main(_is_admin(uid)),
+            )
+
+            admin_text = _ticket_for_admin(ticket, u)
+            for admin_id in _admin_ids():
+                if int(admin_id) == int(uid):
+                    continue
+                try:
+                    await context.bot.send_message(chat_id=admin_id, text=admin_text)
+                except Exception:
+                    pass
+            raise ApplicationHandlerStop
+
     # ----------------------------
     # Main navigation (ReplyKeyboard)
     # ----------------------------
@@ -1057,6 +1166,7 @@ def register_user_handlers(app, settings: Settings, services: dict):
             texts.MENU_PROGRESS,
             texts.MENU_SETTINGS,
             texts.MENU_HELP,
+            texts.HELP_NOT_HELPED,
             texts.MENU_ADMIN,
             texts.BTN_BACK,
             texts.SETTINGS_HABITS,
@@ -1128,12 +1238,14 @@ def register_user_handlers(app, settings: Settings, services: dict):
             STEP_PR_EDIT_DATETIME,
             STEP_PR_PICK_FOR_DELETE,
             STEP_PR_DELETE_CONFIRM,
+            STEP_SUPPORT_WAIT_TEXT,
         }
         nav_texts = {
             texts.MENU_DAY,
             texts.MENU_PROGRESS,
             texts.MENU_SETTINGS,
             texts.MENU_HELP,
+            texts.HELP_NOT_HELPED,
             texts.MENU_ADMIN,
             texts.BTN_BACK,
             texts.DAY_QUOTE,
@@ -1189,8 +1301,9 @@ def register_user_handlers(app, settings: Settings, services: dict):
             raise ApplicationHandlerStop
 
         if text == texts.MENU_PROGRESS:
+            _evaluate_achievements(uid)
             await update.effective_message.reply_text(
-                f"📊 Мой прогресс\nБаллы: {prof['points']}\nДней завершено: {prof['done_days']}",
+                _progress_text(uid),
                 reply_markup=menus.kb_progress(),
             )
             raise ApplicationHandlerStop
@@ -1204,7 +1317,18 @@ def register_user_handlers(app, settings: Settings, services: dict):
             raise ApplicationHandlerStop
 
         if text == texts.MENU_HELP:
-            await update.effective_message.reply_text(_format_faq(), reply_markup=menus.kb_back_only())
+            await update.effective_message.reply_text(
+                _format_faq() + "\n\nЕсли ответ не помог — нажми «🆘 Это не помогло».",
+                reply_markup=menus.kb_help(),
+            )
+            raise ApplicationHandlerStop
+
+        if text == texts.HELP_NOT_HELPED:
+            user_svc.set_step(uid, STEP_SUPPORT_WAIT_TEXT, {})
+            await update.effective_message.reply_text(
+                "Опиши проблему одним сообщением. Я передам это администратору.",
+                reply_markup=menus.kb_back_only(),
+            )
             raise ApplicationHandlerStop
 
         # Day submenu
@@ -1290,9 +1414,9 @@ def register_user_handlers(app, settings: Settings, services: dict):
 
         # Progress submenu
         if text == texts.PROGRESS_REFRESH:
-            prof = analytics.profile(uid)
+            _evaluate_achievements(uid)
             await update.effective_message.reply_text(
-                f"📊 Мой прогресс\nБаллы: {prof['points']}\nДней завершено: {prof['done_days']}",
+                _progress_text(uid),
                 reply_markup=menus.kb_progress(),
             )
             raise ApplicationHandlerStop

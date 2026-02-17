@@ -87,6 +87,7 @@ def kb_admin_analytics():
 def register_admin_handlers(app, settings: Settings, services: dict):
     admin_svc = services.get("admin")
     admin_analytics = services.get("admin_analytics")
+    support_svc = services.get("support")
 
     def _is_admin(update: Update) -> bool:
         try:
@@ -153,6 +154,44 @@ def register_admin_handlers(app, settings: Settings, services: dict):
             reply_markup=kb_admin_analytics(),
         )
 
+    def _ticket_status_label(status: str | None) -> str:
+        s = (status or "").strip().lower()
+        if s == "open":
+            return "🟡 open"
+        if s == "closed":
+            return "✅ closed"
+        return s or "-"
+
+    def _ticket_preview(row: dict) -> str:
+        txt = (row.get("question_text") or "").replace("\n", " ").strip()
+        if len(txt) > 70:
+            txt = txt[:67] + "..."
+        return (
+            f"• #{row.get('id')} [{_ticket_status_label(row.get('status'))}] "
+            f"user={row.get('user_id')} — {txt}"
+        )
+
+    def _ticket_details(row: dict) -> str:
+        base = [
+            f"🆘 Тикет #{row.get('id')}",
+            f"Статус: {_ticket_status_label(row.get('status'))}",
+            f"user_id: {row.get('user_id')}",
+            f"Создан: {row.get('created_at')}",
+            "",
+            "Сообщение:",
+            str(row.get("question_text") or "-"),
+        ]
+        reply = (row.get("admin_reply") or "").strip()
+        if reply:
+            base.extend(
+                [
+                    "",
+                    f"Ответ админа ({row.get('admin_id')}):",
+                    reply,
+                ]
+            )
+        return "\n".join(base)
+
     # ----------------------------
     # Entry points
     # ----------------------------
@@ -168,6 +207,103 @@ def register_admin_handlers(app, settings: Settings, services: dict):
             return
         await _show_admin_home(update)
         raise ApplicationHandlerStop
+
+    async def cmd_tickets(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if not _is_admin(update):
+            await update.effective_message.reply_text("⛔️ Только для админов.")
+            return
+        if not support_svc:
+            await update.effective_message.reply_text("⚠️ Сервис поддержки не подключён.")
+            return
+
+        mode = "open"
+        limit = 20
+        for arg in context.args or []:
+            a = (arg or "").strip().lower()
+            if a in ("open", "all"):
+                mode = a
+                continue
+            if a.isdigit():
+                try:
+                    limit = max(1, min(100, int(a)))
+                except Exception:
+                    pass
+
+        rows = support_svc.list_open(limit=limit) if mode == "open" else support_svc.list_all(limit=limit)
+        if not rows:
+            await update.effective_message.reply_text("Тикетов не найдено.")
+            return
+
+        lines = [f"🆘 Тикеты ({'только open' if mode == 'open' else 'все'}, limit={limit})", ""]
+        lines.extend(_ticket_preview(r) for r in rows)
+        lines.extend(
+            [
+                "",
+                "Команды:",
+                "/ticket <id>",
+                "/reply_ticket <id> <текст>",
+            ]
+        )
+        await update.effective_message.reply_text("\n".join(lines))
+
+    async def cmd_ticket(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if not _is_admin(update):
+            await update.effective_message.reply_text("⛔️ Только для админов.")
+            return
+        if not support_svc:
+            await update.effective_message.reply_text("⚠️ Сервис поддержки не подключён.")
+            return
+        if not context.args:
+            await update.effective_message.reply_text("Использование: /ticket <id>")
+            return
+        raw_id = (context.args[0] or "").strip()
+        if not raw_id.isdigit():
+            await update.effective_message.reply_text("ID должен быть числом.")
+            return
+        row = support_svc.get(int(raw_id))
+        if not row:
+            await update.effective_message.reply_text("Тикет не найден.")
+            return
+        await update.effective_message.reply_text(_ticket_details(row))
+
+    async def cmd_reply_ticket(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if not _is_admin(update):
+            await update.effective_message.reply_text("⛔️ Только для админов.")
+            return
+        if not support_svc:
+            await update.effective_message.reply_text("⚠️ Сервис поддержки не подключён.")
+            return
+        if not context.args or len(context.args) < 2:
+            await update.effective_message.reply_text("Использование: /reply_ticket <id> <текст ответа>")
+            return
+
+        raw_id = (context.args[0] or "").strip()
+        if not raw_id.isdigit():
+            await update.effective_message.reply_text("ID должен быть числом.")
+            return
+        tid = int(raw_id)
+        reply_text = " ".join(context.args[1:]).strip()
+        if not reply_text:
+            await update.effective_message.reply_text("Ответ не должен быть пустым.")
+            return
+
+        row = support_svc.reply_and_close(ticket_id=tid, admin_id=update.effective_user.id, reply_text=reply_text)
+        if not row:
+            await update.effective_message.reply_text(
+                "Не смог закрыть тикет. Возможно, он уже закрыт или не существует."
+            )
+            return
+
+        user_id = int(row.get("user_id") or 0)
+        user_msg = f"💬 Ответ поддержки по тикету #{tid}:\n{reply_text}"
+        sent_ok = True
+        try:
+            await context.bot.send_message(chat_id=user_id, text=user_msg)
+        except Exception:
+            sent_ok = False
+
+        tail = "" if sent_ok else "\n⚠️ Пользователю отправить не удалось (проверь chat доступность)."
+        await update.effective_message.reply_text(f"✅ Тикет #{tid} закрыт и обработан.{tail}")
 
     # ----------------------------
     # Actions (reply-based)
@@ -652,6 +788,9 @@ def register_admin_handlers(app, settings: Settings, services: dict):
     # Register handlers
     # ----------------------------
     app.add_handler(CommandHandler("admin", cmd_admin))
+    app.add_handler(CommandHandler("tickets", cmd_tickets))
+    app.add_handler(CommandHandler("ticket", cmd_ticket))
+    app.add_handler(CommandHandler("reply_ticket", cmd_reply_ticket))
     app.add_handler(MessageHandler(filters.Regex(rf"^{re.escape(texts.MENU_ADMIN)}$"), open_admin_from_menu))
     # Admin menu navigation (reply buttons)
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, admin_menu_pick), group=-11)

@@ -9,6 +9,31 @@ def q_buttons(qid: int):
 
 def register_questionnaire_handlers(app, settings, services):
     qsvc = services["questionnaire"]
+    user_svc = services.get("user")
+    achievement_svc = services.get("achievement")
+
+    def _achievement_lines(rows: list[dict]) -> str | None:
+        if not rows:
+            return None
+        header = "🏆 Новая ачивка!" if len(rows) == 1 else "🏆 Новые ачивки!"
+        lines = [header]
+        for row in rows:
+            icon = (row.get("icon") or "🏅").strip() or "🏅"
+            title = (row.get("title") or "Ачивка").strip()
+            lines.append(f"• {icon} {title}")
+        return "\n".join(lines)
+
+    async def _notify_achievements(uid: int, context: ContextTypes.DEFAULT_TYPE):
+        if not achievement_svc:
+            return
+        try:
+            tz_name = user_svc.get_timezone(uid) if user_svc else None
+            rows = achievement_svc.evaluate(uid, user_timezone=tz_name)
+        except Exception:
+            return
+        text = _achievement_lines(rows)
+        if text:
+            await context.bot.send_message(chat_id=uid, text=text)
 
     async def qsend(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not context.args:
@@ -40,6 +65,7 @@ def register_questionnaire_handlers(app, settings, services):
         qsvc.start_comment_flow(q.from_user.id, qid, score, points)
         await q.edit_message_reply_markup(reply_markup=None)
         await context.bot.send_message(chat_id=q.from_user.id, text=f"Спасибо! Оценка: {score}. +{points} баллов\n\nТеперь напиши коротко: почему так?")
+        await _notify_achievements(q.from_user.id, context)
 
     async def on_comment_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         text = (update.effective_message.text or "").strip()
@@ -57,6 +83,7 @@ def register_questionnaire_handlers(app, settings, services):
             return
         qsvc.save_comment(update.effective_user.id, qid, score, text)
         await update.effective_message.reply_text("✅ Комментарий сохранён!")
+        await _notify_achievements(update.effective_user.id, context)
 
     app.add_handler(CommandHandler("qsend", qsend))
     app.add_handler(CallbackQueryHandler(on_score, pattern=r"^q:score:"))

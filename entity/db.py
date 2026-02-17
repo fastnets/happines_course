@@ -79,6 +79,33 @@ CREATE TABLE IF NOT EXISTS points_ledger (
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
+CREATE TABLE IF NOT EXISTS user_achievements (
+  id SERIAL PRIMARY KEY,
+  user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  code TEXT NOT NULL,
+  title TEXT NOT NULL,
+  description TEXT NOT NULL,
+  icon TEXT NOT NULL DEFAULT '🏅',
+  payload_json JSONB,
+  awarded_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  UNIQUE(user_id, code)
+);
+
+CREATE TABLE IF NOT EXISTS support_tickets (
+  id SERIAL PRIMARY KEY,
+  user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  status TEXT NOT NULL DEFAULT 'open', -- open | closed
+  question_text TEXT NOT NULL,
+  admin_id BIGINT,
+  admin_reply TEXT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  closed_at TIMESTAMPTZ
+);
+
+CREATE INDEX IF NOT EXISTS idx_support_tickets_status_created ON support_tickets(status, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_support_tickets_user_created ON support_tickets(user_id, created_at DESC);
+
 CREATE TABLE IF NOT EXISTS questionnaires (
   id SERIAL PRIMARY KEY,
   question TEXT NOT NULL,
@@ -218,6 +245,12 @@ MIGRATIONS_SQL = [
     "CREATE TABLE IF NOT EXISTS daily_sets (id SERIAL PRIMARY KEY, utc_date DATE NOT NULL, lesson_day_index INT, topic TEXT NOT NULL, trigger TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'pending', created_at TIMESTAMPTZ NOT NULL DEFAULT NOW())",
     "CREATE INDEX IF NOT EXISTS idx_daily_sets_date_status ON daily_sets(utc_date, status, created_at)",
     "CREATE TABLE IF NOT EXISTS daily_items (id SERIAL PRIMARY KEY, set_id INT NOT NULL REFERENCES daily_sets(id) ON DELETE CASCADE, kind TEXT NOT NULL, title TEXT, content_text TEXT NOT NULL, payload_json JSONB, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), UNIQUE(set_id, kind))",
+    # Achievements
+    "CREATE TABLE IF NOT EXISTS user_achievements (id SERIAL PRIMARY KEY, user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE, code TEXT NOT NULL, title TEXT NOT NULL, description TEXT NOT NULL, icon TEXT NOT NULL DEFAULT '🏅', payload_json JSONB, awarded_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), UNIQUE(user_id, code))",
+    # Support tickets
+    "CREATE TABLE IF NOT EXISTS support_tickets (id SERIAL PRIMARY KEY, user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE, status TEXT NOT NULL DEFAULT 'open', question_text TEXT NOT NULL, admin_id BIGINT, admin_reply TEXT, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), closed_at TIMESTAMPTZ)",
+    "CREATE INDEX IF NOT EXISTS idx_support_tickets_status_created ON support_tickets(status, created_at DESC)",
+    "CREATE INDEX IF NOT EXISTS idx_support_tickets_user_created ON support_tickets(user_id, created_at DESC)",
 
     # Habits
     "CREATE TABLE IF NOT EXISTS habits (id SERIAL PRIMARY KEY, user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE, title TEXT NOT NULL, remind_time TEXT NOT NULL, frequency TEXT NOT NULL DEFAULT 'daily', is_active BOOLEAN NOT NULL DEFAULT TRUE, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW())",
