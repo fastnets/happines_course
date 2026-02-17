@@ -37,7 +37,7 @@ def kb_settings() -> ReplyKeyboardMarkup:
         [
             [KeyboardButton(texts.SETTINGS_TIME), KeyboardButton(texts.SETTINGS_TZ)],
             [KeyboardButton(texts.SETTINGS_NAME)],
-            [KeyboardButton(texts.SETTINGS_HABITS)],
+            [KeyboardButton(texts.SETTINGS_HABITS), KeyboardButton(texts.SETTINGS_PERSONAL_REMINDERS)],
             [KeyboardButton(texts.BTN_BACK)],
         ],
         resize_keyboard=True,
@@ -62,6 +62,29 @@ def kb_habit_edit_menu() -> ReplyKeyboardMarkup:
         [
             [KeyboardButton(texts.HABIT_EDIT_NAME), KeyboardButton(texts.HABIT_EDIT_TIME)],
             [KeyboardButton(texts.HABIT_EDIT_FREQ)],
+            [KeyboardButton(texts.BTN_BACK)],
+        ],
+        resize_keyboard=True,
+    )
+
+
+def kb_personal_reminders() -> ReplyKeyboardMarkup:
+    return ReplyKeyboardMarkup(
+        [
+            [KeyboardButton(texts.REMINDERS_CREATE)],
+            [KeyboardButton(texts.REMINDERS_LIST)],
+            [KeyboardButton(texts.REMINDERS_EDIT)],
+            [KeyboardButton(texts.REMINDERS_DELETE)],
+            [KeyboardButton(texts.BTN_BACK)],
+        ],
+        resize_keyboard=True,
+    )
+
+
+def kb_personal_reminder_edit_menu() -> ReplyKeyboardMarkup:
+    return ReplyKeyboardMarkup(
+        [
+            [KeyboardButton(texts.REMINDER_EDIT_TEXT), KeyboardButton(texts.REMINDER_EDIT_DATETIME)],
             [KeyboardButton(texts.BTN_BACK)],
         ],
         resize_keyboard=True,

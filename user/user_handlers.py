@@ -46,6 +46,16 @@ STEP_HABIT_EDIT_FREQ = "habit_edit_freq"
 STEP_HABIT_PICK_FOR_DELETE = "habit_pick_for_delete"
 STEP_HABIT_DELETE_CONFIRM = "habit_delete_confirm"
 
+# Personal reminders wizard/management
+STEP_PR_WAIT_TEXT = "pr_wait_text"
+STEP_PR_WAIT_DATETIME = "pr_wait_datetime"
+STEP_PR_PICK_FOR_EDIT = "pr_pick_for_edit"
+STEP_PR_EDIT_MENU = "pr_edit_menu"
+STEP_PR_EDIT_TEXT = "pr_edit_text"
+STEP_PR_EDIT_DATETIME = "pr_edit_datetime"
+STEP_PR_PICK_FOR_DELETE = "pr_pick_for_delete"
+STEP_PR_DELETE_CONFIRM = "pr_delete_confirm"
+
 
 def _format_faq() -> str:
     try:
@@ -63,6 +73,8 @@ def register_user_handlers(app, settings: Settings, services: dict):
     admin_svc = services.get("admin")
     habit_svc = services.get("habit")
     habit_schedule = services.get("habit_schedule")
+    pr_svc = services.get("personal_reminder")
+    pr_schedule = services.get("personal_reminder_schedule")
 
     def _is_admin(uid: int) -> bool:
         try:
@@ -86,7 +98,7 @@ def register_user_handlers(app, settings: Settings, services: dict):
             return None
         return f"{hh:02d}:{mm:02d}"
 
-    def _extract_habit_id(raw: str) -> int | None:
+    def _extract_numeric_id(raw: str) -> int | None:
         s = (raw or "").strip()
         if s.startswith("#"):
             s = s[1:]
@@ -97,6 +109,31 @@ def register_user_handlers(app, settings: Settings, services: dict):
             return hid if hid > 0 else None
         except Exception:
             return None
+
+    def _parse_user_datetime(raw: str) -> str | None:
+        s = (raw or "").strip()
+        try:
+            dt = datetime.strptime(s, "%d.%m.%Y %H:%M")
+        except Exception:
+            return None
+        return dt.strftime("%d.%m.%Y %H:%M")
+
+    def _format_start_local(uid: int, start_at_val) -> str:
+        tz_name = user_svc.get_timezone(uid) or settings.default_timezone
+        try:
+            tz = ZoneInfo(tz_name)
+        except Exception:
+            tz = ZoneInfo(settings.default_timezone)
+        dt = start_at_val
+        if isinstance(dt, str):
+            try:
+                dt = datetime.fromisoformat(dt.replace("Z", "+00:00"))
+            except Exception:
+                return "-"
+        try:
+            return dt.astimezone(tz).strftime("%d.%m.%Y %H:%M")
+        except Exception:
+            return "-"
 
     # ----------------------------
     # /start
@@ -443,6 +480,14 @@ def register_user_handlers(app, settings: Settings, services: dict):
             STEP_HABIT_EDIT_FREQ,
             STEP_HABIT_PICK_FOR_DELETE,
             STEP_HABIT_DELETE_CONFIRM,
+            STEP_PR_WAIT_TEXT,
+            STEP_PR_WAIT_DATETIME,
+            STEP_PR_PICK_FOR_EDIT,
+            STEP_PR_EDIT_MENU,
+            STEP_PR_EDIT_TEXT,
+            STEP_PR_EDIT_DATETIME,
+            STEP_PR_PICK_FOR_DELETE,
+            STEP_PR_DELETE_CONFIRM,
         }
         nav_texts = {
             texts.MENU_DAY,
@@ -462,10 +507,15 @@ def register_user_handlers(app, settings: Settings, services: dict):
             texts.SETTINGS_NAME,
             texts.SETTINGS_TZ,
             texts.SETTINGS_HABITS,
+            texts.SETTINGS_PERSONAL_REMINDERS,
             texts.HABITS_CREATE,
             texts.HABITS_LIST,
             texts.HABITS_EDIT,
             texts.HABITS_DELETE,
+            texts.REMINDERS_CREATE,
+            texts.REMINDERS_LIST,
+            texts.REMINDERS_EDIT,
+            texts.REMINDERS_DELETE,
         }
         if st_any and st_any.get("step") and st_any.get("step") not in user_steps:
             if text in nav_texts:
@@ -489,6 +539,11 @@ def register_user_handlers(app, settings: Settings, services: dict):
                 await update.effective_message.reply_text(
                     "Меню привычек 👇",
                     reply_markup=menus.kb_habits(),
+                )
+            elif cur and str(cur).startswith("pr_"):
+                await update.effective_message.reply_text(
+                    "Меню напоминаний 👇",
+                    reply_markup=menus.kb_personal_reminders(),
                 )
             else:
                 await update.effective_message.reply_text(
@@ -600,7 +655,7 @@ def register_user_handlers(app, settings: Settings, services: dict):
                 user_svc.set_step(uid, None)
                 await update.effective_message.reply_text("❌ HabitService не подключён.", reply_markup=menus.kb_habits())
                 raise ApplicationHandlerStop
-            hid = _extract_habit_id(text)
+            hid = _extract_numeric_id(text)
             if not hid:
                 await update.effective_message.reply_text("Введи номер привычки (например 1 или #1).")
                 raise ApplicationHandlerStop
@@ -744,7 +799,7 @@ def register_user_handlers(app, settings: Settings, services: dict):
                 user_svc.set_step(uid, None)
                 await update.effective_message.reply_text("❌ HabitService не подключён.", reply_markup=menus.kb_habits())
                 raise ApplicationHandlerStop
-            hid = _extract_habit_id(text)
+            hid = _extract_numeric_id(text)
             if not hid:
                 await update.effective_message.reply_text("Введи номер привычки (например 1 или #1).")
                 raise ApplicationHandlerStop
@@ -788,6 +843,206 @@ def register_user_handlers(app, settings: Settings, services: dict):
             )
             raise ApplicationHandlerStop
 
+        # ----------------------------
+        # Personal reminders wizard/management
+        # ----------------------------
+        if cur == STEP_PR_WAIT_TEXT:
+            if not pr_svc:
+                user_svc.set_step(uid, None)
+                await update.effective_message.reply_text(
+                    "❌ Сервис напоминаний не подключён.",
+                    reply_markup=menus.kb_settings(),
+                )
+                raise ApplicationHandlerStop
+            val = (text or "").strip()
+            if not val:
+                await update.effective_message.reply_text("Текст напоминания не должен быть пустым. Напиши ещё раз.")
+                raise ApplicationHandlerStop
+            user_svc.set_step(uid, STEP_PR_WAIT_DATETIME, {"text": val})
+            await update.effective_message.reply_text(
+                "📅 Введи дату и время в формате ДД.ММ.ГГГГ ЧЧ:ММ\nНапример: 21.02.2026 09:30",
+                reply_markup=menus.kb_back_only(),
+            )
+            raise ApplicationHandlerStop
+
+        if cur == STEP_PR_WAIT_DATETIME:
+            dt = _parse_user_datetime(text)
+            if not dt:
+                await update.effective_message.reply_text(
+                    "Неверный формат. Введи дату и время как ДД.ММ.ГГГГ ЧЧ:ММ.",
+                    reply_markup=menus.kb_back_only(),
+                )
+                raise ApplicationHandlerStop
+            payload = step.get("payload_json") or {}
+            if isinstance(payload, str):
+                try:
+                    payload = json.loads(payload)
+                except Exception:
+                    payload = {}
+            reminder_id = pr_svc.create(
+                user_id=uid,
+                text=payload.get("text") or "",
+                start_local=dt,
+            )
+            if reminder_id and pr_schedule:
+                pr_schedule.schedule_due_jobs()
+            user_svc.set_step(uid, None)
+            await update.effective_message.reply_text(
+                f"✅ Напоминание создано: #{reminder_id}" if reminder_id else "❌ Не смог создать напоминание.",
+                reply_markup=menus.kb_personal_reminders(),
+            )
+            raise ApplicationHandlerStop
+
+        if cur == STEP_PR_PICK_FOR_EDIT:
+            if not pr_svc:
+                user_svc.set_step(uid, None)
+                await update.effective_message.reply_text(
+                    "❌ Сервис напоминаний не подключён.",
+                    reply_markup=menus.kb_personal_reminders(),
+                )
+                raise ApplicationHandlerStop
+            rid = _extract_numeric_id(text)
+            if not rid:
+                await update.effective_message.reply_text("Введи номер напоминания (например 1 или #1).")
+                raise ApplicationHandlerStop
+            r = pr_svc.get_owned(uid, rid)
+            if not r:
+                await update.effective_message.reply_text("Не нашёл такое напоминание у тебя. Введи номер из списка.")
+                raise ApplicationHandlerStop
+            user_svc.set_step(uid, STEP_PR_EDIT_MENU, {"reminder_id": rid})
+            await update.effective_message.reply_text(
+                f"✏️ Изменяем напоминание #{rid}: {r.get('text')}",
+                reply_markup=menus.kb_personal_reminder_edit_menu(),
+            )
+            raise ApplicationHandlerStop
+
+        if cur == STEP_PR_EDIT_MENU:
+            payload = step.get("payload_json") or {}
+            if isinstance(payload, str):
+                try:
+                    payload = json.loads(payload)
+                except Exception:
+                    payload = {}
+            rid = int(payload.get("reminder_id") or 0)
+            if text == texts.REMINDER_EDIT_TEXT:
+                user_svc.set_step(uid, STEP_PR_EDIT_TEXT, {"reminder_id": rid})
+                await update.effective_message.reply_text(
+                    "Введи новый текст напоминания:",
+                    reply_markup=menus.kb_back_only(),
+                )
+                raise ApplicationHandlerStop
+            if text == texts.REMINDER_EDIT_DATETIME:
+                user_svc.set_step(uid, STEP_PR_EDIT_DATETIME, {"reminder_id": rid})
+                await update.effective_message.reply_text(
+                    "Введи новую дату и время в формате ДД.ММ.ГГГГ ЧЧ:ММ:",
+                    reply_markup=menus.kb_back_only(),
+                )
+                raise ApplicationHandlerStop
+            await update.effective_message.reply_text(
+                "Выбери, что изменить: текст или дата и время.",
+                reply_markup=menus.kb_personal_reminder_edit_menu(),
+            )
+            raise ApplicationHandlerStop
+
+        if cur == STEP_PR_EDIT_TEXT:
+            payload = step.get("payload_json") or {}
+            if isinstance(payload, str):
+                try:
+                    payload = json.loads(payload)
+                except Exception:
+                    payload = {}
+            rid = int(payload.get("reminder_id") or 0)
+            val = (text or "").strip()
+            if not val:
+                await update.effective_message.reply_text("Текст не должен быть пустым. Напиши ещё раз.")
+                raise ApplicationHandlerStop
+            ok = bool(pr_svc and pr_svc.update_text(uid, rid, val))
+            user_svc.set_step(uid, None)
+            await update.effective_message.reply_text(
+                "✅ Текст обновлён." if ok else "❌ Не смог обновить напоминание.",
+                reply_markup=menus.kb_personal_reminders(),
+            )
+            raise ApplicationHandlerStop
+
+        if cur == STEP_PR_EDIT_DATETIME:
+            payload = step.get("payload_json") or {}
+            if isinstance(payload, str):
+                try:
+                    payload = json.loads(payload)
+                except Exception:
+                    payload = {}
+            rid = int(payload.get("reminder_id") or 0)
+            dt = _parse_user_datetime(text)
+            if not dt:
+                await update.effective_message.reply_text(
+                    "Неверный формат. Введи как ДД.ММ.ГГГГ ЧЧ:ММ.",
+                    reply_markup=menus.kb_back_only(),
+                )
+                raise ApplicationHandlerStop
+            ok = bool(pr_svc and pr_svc.update_datetime(uid, rid, dt))
+            if ok and pr_schedule:
+                pr_schedule.schedule_due_jobs()
+            user_svc.set_step(uid, None)
+            await update.effective_message.reply_text(
+                "✅ Дата и время обновлены." if ok else "❌ Не смог обновить напоминание.",
+                reply_markup=menus.kb_personal_reminders(),
+            )
+            raise ApplicationHandlerStop
+
+        if cur == STEP_PR_PICK_FOR_DELETE:
+            if not pr_svc:
+                user_svc.set_step(uid, None)
+                await update.effective_message.reply_text(
+                    "❌ Сервис напоминаний не подключён.",
+                    reply_markup=menus.kb_personal_reminders(),
+                )
+                raise ApplicationHandlerStop
+            rid = _extract_numeric_id(text)
+            if not rid:
+                await update.effective_message.reply_text("Введи номер напоминания (например 1 или #1).")
+                raise ApplicationHandlerStop
+            r = pr_svc.get_owned(uid, rid)
+            if not r:
+                await update.effective_message.reply_text("Не нашёл такое напоминание у тебя. Введи номер из списка.")
+                raise ApplicationHandlerStop
+            user_svc.set_step(uid, STEP_PR_DELETE_CONFIRM, {"reminder_id": rid})
+            await update.effective_message.reply_text(
+                f"🗑 Удалить напоминание #{rid}: {r.get('text')}?",
+                reply_markup=menus.kb_yes_no(),
+            )
+            raise ApplicationHandlerStop
+
+        if cur == STEP_PR_DELETE_CONFIRM:
+            payload = step.get("payload_json") or {}
+            if isinstance(payload, str):
+                try:
+                    payload = json.loads(payload)
+                except Exception:
+                    payload = {}
+            rid = int(payload.get("reminder_id") or 0)
+            if text == texts.NO:
+                user_svc.set_step(uid, None)
+                await update.effective_message.reply_text(
+                    "Ок, не удаляю.",
+                    reply_markup=menus.kb_personal_reminders(),
+                )
+                raise ApplicationHandlerStop
+            if text != texts.YES:
+                await update.effective_message.reply_text(
+                    "Нажми «Да» или «Нет».",
+                    reply_markup=menus.kb_yes_no(),
+                )
+                raise ApplicationHandlerStop
+            ok = bool(pr_svc and pr_svc.delete(uid, rid))
+            if ok and pr_schedule:
+                pr_schedule.schedule_due_jobs()
+            user_svc.set_step(uid, None)
+            await update.effective_message.reply_text(
+                "✅ Напоминание удалено." if ok else "❌ Не смог удалить напоминание.",
+                reply_markup=menus.kb_personal_reminders(),
+            )
+            raise ApplicationHandlerStop
+
     # ----------------------------
     # Main navigation (ReplyKeyboard)
     # ----------------------------
@@ -805,10 +1060,15 @@ def register_user_handlers(app, settings: Settings, services: dict):
             texts.MENU_ADMIN,
             texts.BTN_BACK,
             texts.SETTINGS_HABITS,
+            texts.SETTINGS_PERSONAL_REMINDERS,
             texts.HABITS_CREATE,
             texts.HABITS_LIST,
             texts.HABITS_EDIT,
             texts.HABITS_DELETE,
+            texts.REMINDERS_CREATE,
+            texts.REMINDERS_LIST,
+            texts.REMINDERS_EDIT,
+            texts.REMINDERS_DELETE,
         ):
             try:
                 learning.state.clear_state(uid)
@@ -860,6 +1120,14 @@ def register_user_handlers(app, settings: Settings, services: dict):
             STEP_HABIT_EDIT_FREQ,
             STEP_HABIT_PICK_FOR_DELETE,
             STEP_HABIT_DELETE_CONFIRM,
+            STEP_PR_WAIT_TEXT,
+            STEP_PR_WAIT_DATETIME,
+            STEP_PR_PICK_FOR_EDIT,
+            STEP_PR_EDIT_MENU,
+            STEP_PR_EDIT_TEXT,
+            STEP_PR_EDIT_DATETIME,
+            STEP_PR_PICK_FOR_DELETE,
+            STEP_PR_DELETE_CONFIRM,
         }
         nav_texts = {
             texts.MENU_DAY,
@@ -879,10 +1147,15 @@ def register_user_handlers(app, settings: Settings, services: dict):
             texts.SETTINGS_NAME,
             texts.SETTINGS_TZ,
             texts.SETTINGS_HABITS,
+            texts.SETTINGS_PERSONAL_REMINDERS,
             texts.HABITS_CREATE,
             texts.HABITS_LIST,
             texts.HABITS_EDIT,
             texts.HABITS_DELETE,
+            texts.REMINDERS_CREATE,
+            texts.REMINDERS_LIST,
+            texts.REMINDERS_EDIT,
+            texts.REMINDERS_DELETE,
         }
         if st_any and st_any.get("step") and st_any.get("step") not in user_steps and text not in nav_texts:
             return
@@ -1092,6 +1365,113 @@ def register_user_handlers(app, settings: Settings, services: dict):
             user_svc.set_step(uid, STEP_HABIT_PICK_FOR_DELETE, {})
             await update.effective_message.reply_text(
                 "🗑 Выбери привычку для удаления.\n\n" + "\n".join(lines) + "\n\nВведи номер (например 1 или #1):",
+                reply_markup=menus.kb_back_only(),
+            )
+            raise ApplicationHandlerStop
+
+        if text == texts.SETTINGS_PERSONAL_REMINDERS:
+            await update.effective_message.reply_text(
+                "🔔 Мои напоминания\n\nВыбери действие:",
+                reply_markup=menus.kb_personal_reminders(),
+            )
+            raise ApplicationHandlerStop
+
+        if text == texts.REMINDERS_CREATE:
+            if not pr_svc:
+                await update.effective_message.reply_text(
+                    "❌ Сервис напоминаний не подключён.",
+                    reply_markup=menus.kb_settings(),
+                )
+                raise ApplicationHandlerStop
+            user_svc.set_step(uid, STEP_PR_WAIT_TEXT, {})
+            await update.effective_message.reply_text(
+                "➕ Создаём напоминание!\n\nВведи текст напоминания.",
+                reply_markup=menus.kb_back_only(),
+            )
+            raise ApplicationHandlerStop
+
+        if text == texts.REMINDERS_LIST:
+            if not pr_svc:
+                await update.effective_message.reply_text(
+                    "❌ Сервис напоминаний не подключён.",
+                    reply_markup=menus.kb_personal_reminders(),
+                )
+                raise ApplicationHandlerStop
+            reminders = pr_svc.list_for_user(uid)
+            if not reminders:
+                await update.effective_message.reply_text(
+                    "У тебя пока нет персональных напоминаний. Нажми «Создать напоминание».",
+                    reply_markup=menus.kb_personal_reminders(),
+                )
+                raise ApplicationHandlerStop
+
+            lines = []
+            for r in reminders:
+                st = "🟢" if r.get("is_active") else "⚪️"
+                rid = int(r.get("id") or 0)
+                txt = (r.get("text") or "").strip()
+                start_local = _format_start_local(uid, r.get("start_at"))
+                lines.append(f"{st} #{rid} — {txt} — {start_local}")
+            await update.effective_message.reply_text(
+                "📋 Твои напоминания:\n\n" + "\n".join(lines),
+                reply_markup=menus.kb_personal_reminders(),
+            )
+            raise ApplicationHandlerStop
+
+        if text == texts.REMINDERS_EDIT:
+            if not pr_svc:
+                await update.effective_message.reply_text(
+                    "❌ Сервис напоминаний не подключён.",
+                    reply_markup=menus.kb_personal_reminders(),
+                )
+                raise ApplicationHandlerStop
+            reminders = pr_svc.list_for_user(uid)
+            if not reminders:
+                await update.effective_message.reply_text(
+                    "У тебя пока нет персональных напоминаний. Нажми «Создать напоминание».",
+                    reply_markup=menus.kb_personal_reminders(),
+                )
+                raise ApplicationHandlerStop
+            lines = []
+            for r in reminders:
+                rid = int(r.get("id") or 0)
+                txt = (r.get("text") or "").strip()
+                start_local = _format_start_local(uid, r.get("start_at"))
+                lines.append(f"#{rid} — {txt} — {start_local}")
+            user_svc.set_step(uid, STEP_PR_PICK_FOR_EDIT, {})
+            await update.effective_message.reply_text(
+                "✏️ Выбери напоминание для изменения.\n\n"
+                + "\n".join(lines)
+                + "\n\nВведи номер (например 1 или #1):",
+                reply_markup=menus.kb_back_only(),
+            )
+            raise ApplicationHandlerStop
+
+        if text == texts.REMINDERS_DELETE:
+            if not pr_svc:
+                await update.effective_message.reply_text(
+                    "❌ Сервис напоминаний не подключён.",
+                    reply_markup=menus.kb_personal_reminders(),
+                )
+                raise ApplicationHandlerStop
+            reminders = pr_svc.list_for_user(uid)
+            if not reminders:
+                await update.effective_message.reply_text(
+                    "У тебя пока нет персональных напоминаний. Нажми «Создать напоминание».",
+                    reply_markup=menus.kb_personal_reminders(),
+                )
+                raise ApplicationHandlerStop
+            lines = []
+            for r in reminders:
+                rid = int(r.get("id") or 0)
+                txt = (r.get("text") or "").strip()
+                start_local = _format_start_local(uid, r.get("start_at"))
+                lines.append(f"#{rid} — {txt} — {start_local}")
+            user_svc.set_step(uid, STEP_PR_PICK_FOR_DELETE, {})
+            await update.effective_message.reply_text(
+                "🗑 Выбери напоминание для удаления.\n\n"
+                + "\n".join(lines)
+                + "\n\nВведи номер (например 1 или #1):",
                 reply_markup=menus.kb_back_only(),
             )
             raise ApplicationHandlerStop

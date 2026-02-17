@@ -169,6 +169,22 @@ CREATE TABLE IF NOT EXISTS habits (
 
 CREATE INDEX IF NOT EXISTS idx_habits_user_active ON habits(user_id, is_active);
 
+-- Personal reminders (arbitrary user events/tasks)
+CREATE TABLE IF NOT EXISTS personal_reminders (
+  id SERIAL PRIMARY KEY,
+  user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  text TEXT NOT NULL,
+  start_at TIMESTAMPTZ NOT NULL, -- one-time reminder datetime in UTC
+  remind_time TEXT NOT NULL, -- 'HH:MM' in user's local timezone (for display)
+  frequency TEXT NOT NULL DEFAULT 'daily', -- legacy column (ignored by one-time scheduler)
+  weekdays TEXT, -- legacy column (ignored by one-time scheduler)
+  is_active BOOLEAN NOT NULL DEFAULT TRUE,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_personal_reminders_user_active ON personal_reminders(user_id, is_active);
+
 -- Planned occurrences (one row per habit reminder time)
 CREATE TABLE IF NOT EXISTS habit_occurrences (
   id SERIAL PRIMARY KEY,
@@ -206,6 +222,10 @@ MIGRATIONS_SQL = [
     # Habits
     "CREATE TABLE IF NOT EXISTS habits (id SERIAL PRIMARY KEY, user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE, title TEXT NOT NULL, remind_time TEXT NOT NULL, frequency TEXT NOT NULL DEFAULT 'daily', is_active BOOLEAN NOT NULL DEFAULT TRUE, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW())",
     "CREATE INDEX IF NOT EXISTS idx_habits_user_active ON habits(user_id, is_active)",
+    # Personal reminders
+    "CREATE TABLE IF NOT EXISTS personal_reminders (id SERIAL PRIMARY KEY, user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE, text TEXT NOT NULL, start_at TIMESTAMPTZ NOT NULL, remind_time TEXT NOT NULL, frequency TEXT NOT NULL DEFAULT 'daily', weekdays TEXT, is_active BOOLEAN NOT NULL DEFAULT TRUE, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW())",
+    "CREATE INDEX IF NOT EXISTS idx_personal_reminders_user_active ON personal_reminders(user_id, is_active)",
+    # Habit occurrences
     "CREATE TABLE IF NOT EXISTS habit_occurrences (id SERIAL PRIMARY KEY, habit_id INT NOT NULL REFERENCES habits(id) ON DELETE CASCADE, user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE, scheduled_at TIMESTAMPTZ NOT NULL, status TEXT NOT NULL DEFAULT 'planned', action_at TIMESTAMPTZ, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), UNIQUE(habit_id, scheduled_at))",
     "CREATE INDEX IF NOT EXISTS idx_habit_occ_user_sched ON habit_occurrences(user_id, scheduled_at, status)",
 ]

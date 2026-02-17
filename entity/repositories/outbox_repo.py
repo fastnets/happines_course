@@ -77,3 +77,20 @@ class OutboxRepo:
                 (from_utc_iso, habit_id),
             )
             return cur.rowcount
+
+    def cancel_future_personal_reminder_jobs(self, reminder_id: int, from_utc_iso: str) -> int:
+        """Cancel future pending personal_reminder jobs for a specific reminder."""
+
+        with self.db.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE outbox_jobs
+                   SET status='cancelled'
+                 WHERE status='pending'
+                   AND run_at >= %s
+                   AND payload_json->>'kind'='personal_reminder'
+                   AND (payload_json->>'reminder_id')::int = %s
+                """,
+                (from_utc_iso, reminder_id),
+            )
+            return cur.rowcount

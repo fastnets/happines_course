@@ -24,6 +24,7 @@ SETTINGS_TIME = "⏰ Изменить время"
 SETTINGS_NAME = "✏️ Изменить имя"
 SETTINGS_TZ = "🕒 Изменить часовой пояс"
 SETTINGS_HABITS = "✅ Мои привычки"
+SETTINGS_PERSONAL_REMINDERS = "🔔 Мои напоминания"
 
 # Habits
 HABITS_CREATE = "➕ Создать привычку"
@@ -35,6 +36,16 @@ HABITS_DELETE = "🗑 Удалить привычку"
 HABIT_EDIT_NAME = "Название"
 HABIT_EDIT_TIME = "Время"
 HABIT_EDIT_FREQ = "Периодичность"
+
+# Personal reminders
+REMINDERS_CREATE = "➕ Создать напоминание"
+REMINDERS_LIST = "📋 Список напоминаний"
+REMINDERS_EDIT = "✏️ Изменить напоминание"
+REMINDERS_DELETE = "🗑 Удалить напоминание"
+
+# Personal reminder edit submenu
+REMINDER_EDIT_TEXT = "Текст"
+REMINDER_EDIT_DATETIME = "Дата и время"
 
 # Admin menus
 ADMIN_LESSONS = "📚 Лекции"

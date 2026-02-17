@@ -31,6 +31,9 @@ async def tick(context: ContextTypes.DEFAULT_TYPE, services: dict):
     # Create habit reminder jobs (occurrences + outbox)
     if services.get("habit_schedule"):
         services["habit_schedule"].schedule_due_jobs()
+    # Create personal reminder jobs (outbox)
+    if services.get("personal_reminder_schedule"):
+        services["personal_reminder_schedule"].schedule_due_jobs()
     await _process_outbox(context, services)
 
 
@@ -246,6 +249,13 @@ async def _process_outbox(context: ContextTypes.DEFAULT_TYPE, services: dict):
                 )
                 text = f"🔔 Привычка\n\n*{title}*\n\nОтметь результат:"
                 await context.bot.send_message(chat_id=user_id, text=text, parse_mode="Markdown", reply_markup=kb)
+                outbox.mark_sent(job_id)
+                continue
+
+            if kind == "personal_reminder":
+                text = (payload.get("text") or "").strip() or "Напоминание"
+                msg = f"🔔 Персональное напоминание\n\n{text}"
+                await context.bot.send_message(chat_id=user_id, text=msg)
                 outbox.mark_sent(job_id)
                 continue
 
