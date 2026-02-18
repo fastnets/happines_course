@@ -101,7 +101,7 @@ class DailyPackRepo:
         with self.db.cursor() as cur:
             cur.execute("SELECT payload_json FROM daily_items WHERE id=%s", (item_id,))
             row = cur.fetchone()
-            payload = row[0] if row and row[0] else {}
+            payload = row.get("payload_json") if row else {}
             if isinstance(payload, str):
                 try:
                     payload = json.loads(payload)

@@ -187,24 +187,6 @@ class ScheduleService:
         days = (now_local.date() - enrolled_local.date()).days
         return max(1, days + 1)
 
-    def day_index_for_local_date(self, user_id: int, for_date: date) -> int:
-        """1-based day index for a specific local date in user's timezone."""
-
-        e = self.enroll.get(user_id)
-        if not e:
-            return 1
-        tz = self._user_tz(user_id)
-        enrolled_local = e["enrolled_at"].astimezone(tz).date()
-        days = (for_date - enrolled_local).days
-        return max(1, days + 1)
-
-    def compute_run_at_utc(self, user_tz: ZoneInfo, for_date: date, delivery_hhmm: str) -> datetime:
-        """Canonical formula: (for_date + delivery_time in user_tz) -> UTC timestamp."""
-
-        t = self._parse_hhmm(delivery_hhmm or "21:00", "21:00")
-        local_dt = datetime.combine(for_date, t, tzinfo=user_tz)
-        return local_dt.astimezone(timezone.utc)
-
     def make_viewed_cb(self, day_index: int, points: int) -> str:
         return f"lesson:viewed:day={day_index}:p={points}"
 
@@ -218,31 +200,6 @@ class ScheduleService:
             return {"day_index": day, "points": pts}
         except Exception:
             return None
-
-    def _log_job(self, user_id: int, kind: str, job_key: str, user_tz: ZoneInfo, for_date: date, delivery_hhmm: str, run_at_utc: datetime):
-        try:
-            local_target = datetime.combine(for_date, self._parse_hhmm(delivery_hhmm, "21:00"), tzinfo=user_tz)
-        except Exception:
-            local_target = None
-        log.info(
-            "plan job user_id=%s kind=%s job_key=%s for_date=%s tz=%s local_target=%s utc_run_at=%s",
-            user_id,
-            kind,
-            job_key,
-            for_date.isoformat(),
-            str(user_tz),
-            local_target.isoformat() if local_target else "-",
-            run_at_utc.isoformat(),
-        )
-
-    def reschedule_user(self, user_id: int):
-        """Cancel future jobs for the user and schedule again (today+tomorrow)."""
-
-        now_utc = datetime.now(timezone.utc)
-        kinds = ["day_lesson", "day_quest", "daily_reminder", "questionnaire_broadcast"]
-        self.outbox.cancel_future_jobs(user_id, kinds=kinds, from_utc_iso=now_utc.isoformat())
-        # schedule fresh
-        self._schedule_for_user(user_id, now_utc)
 
     def schedule_due_jobs(self) -> int:
         """Plan deliveries into outbox_jobs.
