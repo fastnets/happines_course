@@ -35,6 +35,13 @@ BTN_A_CONTENT = "📚 Контент"
 BTN_A_QUESTIONNAIRES = "📋 Анкеты"
 BTN_A_REMINDERS = "⏰ Ремайндеры"
 
+# Tickets submenu
+BTN_T_OPEN = "🟡 Open"
+BTN_T_ALL = "📚 Все"
+BTN_T_VIEW = "🔎 Открыть по ID"
+BTN_T_REPLY = "💬 Ответить"
+BTN_T_CLOSE = "✅ Закрыть"
+
 
 def _extract_quest_points(item: dict) -> int:
     """Return quest points from current or legacy field names."""
@@ -57,6 +64,7 @@ def kb_admin_home():
         [
             [KeyboardButton(texts.ADMIN_LESSONS), KeyboardButton(texts.ADMIN_QUESTS)],
             [KeyboardButton(texts.ADMIN_QUESTIONNAIRES), KeyboardButton(texts.ADMIN_ANALYTICS)],
+            [KeyboardButton(texts.ADMIN_TICKETS)],
             [KeyboardButton(texts.BTN_BACK)],
         ]
     )
@@ -79,6 +87,17 @@ def kb_admin_analytics():
             [KeyboardButton(BTN_A_SUMMARY), KeyboardButton(BTN_A_FUNNEL)],
             [KeyboardButton(BTN_A_DELIVERY), KeyboardButton(BTN_A_CONTENT)],
             [KeyboardButton(BTN_A_QUESTIONNAIRES), KeyboardButton(BTN_A_REMINDERS)],
+            [KeyboardButton(texts.BTN_BACK)],
+        ]
+    )
+
+
+def kb_admin_tickets():
+    return kb(
+        [
+            [KeyboardButton(BTN_T_OPEN), KeyboardButton(BTN_T_ALL)],
+            [KeyboardButton(BTN_T_VIEW), KeyboardButton(BTN_T_REPLY)],
+            [KeyboardButton(BTN_T_CLOSE)],
             [KeyboardButton(texts.BTN_BACK)],
         ]
     )
@@ -154,6 +173,63 @@ def register_admin_handlers(app, settings: Settings, services: dict):
             reply_markup=kb_admin_analytics(),
         )
 
+    def _safe_tickets_mode(value: str | None) -> str:
+        return "all" if (value or "").strip().lower() == "all" else "open"
+
+    def _safe_tickets_limit(value) -> int:
+        try:
+            n = int(value)
+        except Exception:
+            n = 20
+        return max(1, min(100, n))
+
+    def _tickets_list_text(rows: list[dict], mode: str, limit: int, include_commands: bool) -> str:
+        mode_label = "только open" if mode == "open" else "все"
+        if not rows:
+            return f"🆘 Тикеты ({mode_label}, limit={limit})\n\nТикетов не найдено."
+
+        lines = [f"🆘 Тикеты ({mode_label}, limit={limit})", ""]
+        lines.extend(_ticket_preview(r) for r in rows)
+        if include_commands:
+            lines.extend(
+                [
+                    "",
+                    "Команды:",
+                    "/ticket <id>",
+                    "/reply_ticket <id> <текст>",
+                ]
+            )
+        return "\n".join(lines)
+
+    async def _send_tickets_list(
+        update: Update,
+        mode: str = "open",
+        limit: int = 20,
+        include_commands: bool = False,
+        reply_markup=None,
+    ):
+        if not support_svc:
+            await update.effective_message.reply_text("⚠️ Сервис поддержки не подключён.", reply_markup=reply_markup)
+            return
+        safe_mode = _safe_tickets_mode(mode)
+        safe_limit = _safe_tickets_limit(limit)
+        rows = support_svc.list_open(limit=safe_limit) if safe_mode == "open" else support_svc.list_all(limit=safe_limit)
+        text = _tickets_list_text(rows, safe_mode, safe_limit, include_commands)
+        await update.effective_message.reply_text(text, reply_markup=reply_markup)
+
+    async def _show_tickets_menu(update: Update, mode: str = "open", limit: int = 20):
+        uid = update.effective_user.id
+        safe_mode = _safe_tickets_mode(mode)
+        safe_limit = _safe_tickets_limit(limit)
+        _set_menu(uid, "tickets", {"mode": safe_mode, "limit": safe_limit})
+        await _send_tickets_list(
+            update,
+            mode=safe_mode,
+            limit=safe_limit,
+            include_commands=False,
+            reply_markup=kb_admin_tickets(),
+        )
+
     def _ticket_status_label(status: str | None) -> str:
         s = (status or "").strip().lower()
         if s == "open":
@@ -212,10 +288,6 @@ def register_admin_handlers(app, settings: Settings, services: dict):
         if not _is_admin(update):
             await update.effective_message.reply_text("⛔️ Только для админов.")
             return
-        if not support_svc:
-            await update.effective_message.reply_text("⚠️ Сервис поддержки не подключён.")
-            return
-
         mode = "open"
         limit = 20
         for arg in context.args or []:
@@ -228,23 +300,7 @@ def register_admin_handlers(app, settings: Settings, services: dict):
                     limit = max(1, min(100, int(a)))
                 except Exception:
                     pass
-
-        rows = support_svc.list_open(limit=limit) if mode == "open" else support_svc.list_all(limit=limit)
-        if not rows:
-            await update.effective_message.reply_text("Тикетов не найдено.")
-            return
-
-        lines = [f"🆘 Тикеты ({'только open' if mode == 'open' else 'все'}, limit={limit})", ""]
-        lines.extend(_ticket_preview(r) for r in rows)
-        lines.extend(
-            [
-                "",
-                "Команды:",
-                "/ticket <id>",
-                "/reply_ticket <id> <текст>",
-            ]
-        )
-        await update.effective_message.reply_text("\n".join(lines))
+        await _send_tickets_list(update, mode=mode, limit=limit, include_commands=True)
 
     async def cmd_ticket(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not _is_admin(update):
@@ -266,6 +322,41 @@ def register_admin_handlers(app, settings: Settings, services: dict):
             return
         await update.effective_message.reply_text(_ticket_details(row))
 
+    async def _reply_ticket_and_notify(
+        update: Update,
+        context: ContextTypes.DEFAULT_TYPE,
+        ticket_id: int,
+        reply_text: str,
+        *,
+        reply_markup=None,
+    ) -> bool:
+        row = support_svc.reply_and_close(
+            ticket_id=int(ticket_id),
+            admin_id=update.effective_user.id,
+            reply_text=reply_text,
+        )
+        if not row:
+            await update.effective_message.reply_text(
+                "Не смог закрыть тикет. Возможно, он уже закрыт или не существует.",
+                reply_markup=reply_markup,
+            )
+            return False
+
+        user_id = int(row.get("user_id") or 0)
+        user_msg = f"💬 Ответ поддержки по тикету #{int(ticket_id)}:\n{reply_text}"
+        sent_ok = True
+        try:
+            await context.bot.send_message(chat_id=user_id, text=user_msg)
+        except Exception:
+            sent_ok = False
+
+        tail = "" if sent_ok else "\n⚠️ Пользователю отправить не удалось (проверь chat доступность)."
+        await update.effective_message.reply_text(
+            f"✅ Тикет #{int(ticket_id)} закрыт и обработан.{tail}",
+            reply_markup=reply_markup,
+        )
+        return True
+
     async def cmd_reply_ticket(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not _is_admin(update):
             await update.effective_message.reply_text("⛔️ Только для админов.")
@@ -286,24 +377,7 @@ def register_admin_handlers(app, settings: Settings, services: dict):
         if not reply_text:
             await update.effective_message.reply_text("Ответ не должен быть пустым.")
             return
-
-        row = support_svc.reply_and_close(ticket_id=tid, admin_id=update.effective_user.id, reply_text=reply_text)
-        if not row:
-            await update.effective_message.reply_text(
-                "Не смог закрыть тикет. Возможно, он уже закрыт или не существует."
-            )
-            return
-
-        user_id = int(row.get("user_id") or 0)
-        user_msg = f"💬 Ответ поддержки по тикету #{tid}:\n{reply_text}"
-        sent_ok = True
-        try:
-            await context.bot.send_message(chat_id=user_id, text=user_msg)
-        except Exception:
-            sent_ok = False
-
-        tail = "" if sent_ok else "\n⚠️ Пользователю отправить не удалось (проверь chat доступность)."
-        await update.effective_message.reply_text(f"✅ Тикет #{tid} закрыт и обработан.{tail}")
+        await _reply_ticket_and_notify(update, context, tid, reply_text)
 
     # ----------------------------
     # Actions (reply-based)
@@ -453,7 +527,7 @@ def register_admin_handlers(app, settings: Settings, services: dict):
         if text == texts.BTN_BACK:
             screen0 = (screen or "home").lower()
 
-            if screen0 in ("lessons", "quests", "questionnaires", "analytics"):
+            if screen0 in ("lessons", "quests", "questionnaires", "analytics", "tickets"):
                 await _show_admin_home(update)
                 raise ApplicationHandlerStop
 
@@ -471,6 +545,8 @@ def register_admin_handlers(app, settings: Settings, services: dict):
                 await _show_q_menu(update); raise ApplicationHandlerStop
             if text == texts.ADMIN_ANALYTICS:
                 await _show_analytics_menu(update, 7); raise ApplicationHandlerStop
+            if text == texts.ADMIN_TICKETS:
+                await _show_tickets_menu(update, "open", 20); raise ApplicationHandlerStop
 
         if screen == "analytics":
             payload0 = payload or {}
@@ -528,6 +604,40 @@ def register_admin_handlers(app, settings: Settings, services: dict):
             if text == BTN_DELETE: await q_delete(update); raise ApplicationHandlerStop
             if text == BTN_RANDOM_Q: await q_random(update); raise ApplicationHandlerStop
 
+        if screen == "tickets":
+            payload0 = payload or {}
+            mode = _safe_tickets_mode(payload0.get("mode"))
+            limit = _safe_tickets_limit(payload0.get("limit"))
+
+            if text == BTN_T_OPEN:
+                await _show_tickets_menu(update, "open", limit); raise ApplicationHandlerStop
+            if text == BTN_T_ALL:
+                await _show_tickets_menu(update, "all", limit); raise ApplicationHandlerStop
+            if text == BTN_T_VIEW:
+                state.set_state(
+                    uid,
+                    ADMIN_WIZARD_STEP,
+                    {"mode": "t_view_id", "return_mode": mode, "return_limit": limit},
+                )
+                await update.effective_message.reply_text("Введи ID тикета (число).")
+                raise ApplicationHandlerStop
+            if text == BTN_T_REPLY:
+                state.set_state(
+                    uid,
+                    ADMIN_WIZARD_STEP,
+                    {"mode": "t_reply_id", "return_mode": mode, "return_limit": limit},
+                )
+                await update.effective_message.reply_text("Введи ID тикета, на который нужно ответить.")
+                raise ApplicationHandlerStop
+            if text == BTN_T_CLOSE:
+                state.set_state(
+                    uid,
+                    ADMIN_WIZARD_STEP,
+                    {"mode": "t_close_id", "return_mode": mode, "return_limit": limit},
+                )
+                await update.effective_message.reply_text("Введи ID тикета, который нужно закрыть.")
+                raise ApplicationHandlerStop
+
         # Stop further handlers while admin menu is active.
         raise ApplicationHandlerStop
 
@@ -566,6 +676,10 @@ def register_admin_handlers(app, settings: Settings, services: dict):
                 await _show_quests_menu(update)
             elif mode0.startswith("q_") or mode0.startswith("qcast_"):
                 await _show_q_menu(update)
+            elif mode0.startswith("t_"):
+                back_mode = _safe_tickets_mode(payload0.get("return_mode"))
+                back_limit = _safe_tickets_limit(payload0.get("return_limit"))
+                await _show_tickets_menu(update, back_mode, back_limit)
             else:
                 await _show_admin_home(update)
             raise ApplicationHandlerStop
@@ -739,6 +853,82 @@ def register_admin_handlers(app, settings: Settings, services: dict):
             await update.effective_message.reply_text("✅ Удалено" if ok else "⚠️ Не найдено")
             return
 
+        # --- Tickets wizard ---
+        if mode == "t_view_id":
+            if not re.match(r"^\d+$", text):
+                await update.effective_message.reply_text("ID должен быть числом."); raise ApplicationHandlerStop
+            tid = int(text)
+            return_mode = _safe_tickets_mode(payload.get("return_mode"))
+            return_limit = _safe_tickets_limit(payload.get("return_limit"))
+            _set_menu(uid, "tickets", {"mode": return_mode, "limit": return_limit})
+            if not support_svc:
+                await update.effective_message.reply_text("⚠️ Сервис поддержки не подключён.", reply_markup=kb_admin_tickets())
+                return
+            row = support_svc.get(tid)
+            if not row:
+                await update.effective_message.reply_text("Тикет не найден.", reply_markup=kb_admin_tickets())
+                return
+            await update.effective_message.reply_text(_ticket_details(row), reply_markup=kb_admin_tickets())
+            return
+
+        if mode == "t_reply_id":
+            if not re.match(r"^\d+$", text):
+                await update.effective_message.reply_text("ID должен быть числом."); raise ApplicationHandlerStop
+            if not support_svc:
+                _set_menu(uid, "tickets", {"mode": _safe_tickets_mode(payload.get("return_mode")), "limit": _safe_tickets_limit(payload.get("return_limit"))})
+                await update.effective_message.reply_text("⚠️ Сервис поддержки не подключён.", reply_markup=kb_admin_tickets())
+                return
+            tid = int(text)
+            row = support_svc.get(tid)
+            if not row:
+                await update.effective_message.reply_text("Тикет не найден."); raise ApplicationHandlerStop
+            payload["ticket_id"] = tid
+            payload["mode"] = "t_reply_text"
+            state.set_state(uid, ADMIN_WIZARD_STEP, payload)
+            await update.effective_message.reply_text(f"Тикет #{tid}.\nВведи текст ответа пользователю.")
+            return
+
+        if mode == "t_reply_text":
+            tid = int(payload.get("ticket_id") or 0)
+            reply_text = text.strip()
+            if tid <= 0:
+                _set_menu(uid, "tickets", {"mode": _safe_tickets_mode(payload.get("return_mode")), "limit": _safe_tickets_limit(payload.get("return_limit"))})
+                await update.effective_message.reply_text("⚠️ Потерян ID тикета. Открой действие заново.", reply_markup=kb_admin_tickets())
+                return
+            if not reply_text:
+                await update.effective_message.reply_text("Ответ не должен быть пустым."); raise ApplicationHandlerStop
+            return_mode = _safe_tickets_mode(payload.get("return_mode"))
+            return_limit = _safe_tickets_limit(payload.get("return_limit"))
+            _set_menu(uid, "tickets", {"mode": return_mode, "limit": return_limit})
+            await _reply_ticket_and_notify(
+                update,
+                context,
+                tid,
+                reply_text,
+                reply_markup=kb_admin_tickets(),
+            )
+            return
+
+        if mode == "t_close_id":
+            if not re.match(r"^\d+$", text):
+                await update.effective_message.reply_text("ID должен быть числом."); raise ApplicationHandlerStop
+            tid = int(text)
+            return_mode = _safe_tickets_mode(payload.get("return_mode"))
+            return_limit = _safe_tickets_limit(payload.get("return_limit"))
+            _set_menu(uid, "tickets", {"mode": return_mode, "limit": return_limit})
+            if not support_svc:
+                await update.effective_message.reply_text("⚠️ Сервис поддержки не подключён.", reply_markup=kb_admin_tickets())
+                return
+            row = support_svc.close(tid, update.effective_user.id)
+            if not row:
+                await update.effective_message.reply_text(
+                    "Не смог закрыть тикет. Возможно, он уже закрыт или не существует.",
+                    reply_markup=kb_admin_tickets(),
+                )
+                return
+            await update.effective_message.reply_text(f"✅ Тикет #{tid} закрыт.", reply_markup=kb_admin_tickets())
+            return
+
         # --- Broadcast random questionnaire to all ---
         if mode == "qcast_question":
             payload = {"mode": "qcast_charts", "question": text}
@@ -780,8 +970,6 @@ def register_admin_handlers(app, settings: Settings, services: dict):
             await update.effective_message.reply_text(f"✅ Запланировано. Анкета ID={qid}. Получателей: {created}")
             return
 
-    # ----------------------------
-    # Register handlers
         raise ApplicationHandlerStop
 
     # ----------------------------

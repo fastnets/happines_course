@@ -21,6 +21,7 @@ PROGRESS_REFRESH = "🔄 Обновить"
 
 # Help
 HELP_NOT_HELPED = "🆘 Это не помогло"
+HELP_CONTACT_ADMIN = "📨 Направить вопрос администрации"
 
 # Settings
 SETTINGS_TIME = "⏰ Изменить время"
@@ -55,6 +56,7 @@ ADMIN_LESSONS = "📚 Лекции"
 ADMIN_QUESTS = "📝 Задания"
 ADMIN_QUESTIONNAIRES = "📋 Анкеты"
 ADMIN_ANALYTICS = "📈 Аналитика"
+ADMIN_TICKETS = "🆘 Тикеты"
 
 CRUD_LIST = "📋 Список"
 CRUD_CREATE = "➕ Создать"
@@ -73,6 +75,7 @@ ADMIN_TEXTS = {
     ADMIN_QUESTS,
     ADMIN_QUESTIONNAIRES,
     ADMIN_ANALYTICS,
+    ADMIN_TICKETS,
     CRUD_LIST,
     CRUD_CREATE,
     CRUD_EDIT,

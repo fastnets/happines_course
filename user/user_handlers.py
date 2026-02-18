@@ -59,12 +59,24 @@ STEP_PR_DELETE_CONFIRM = "pr_delete_confirm"
 # Support
 STEP_SUPPORT_WAIT_TEXT = "support_wait_text"
 
+HELP_FAQ_PREFIX = "help:faq:"
+HELP_FAQ_LIST = "help:faq:list"
+HELP_ESCALATE = "help:escalate"
+HELP_ESCALATE_TEXT = "📨 Направить вопрос администрации"
 
-def _format_faq() -> str:
-    try:
-        return "❓ Помощь\n\n" + "\n".join([f"{q} — {a}" for q, a in FAQ])
-    except Exception:
-        return "❓ Помощь\n\n" + str(FAQ)
+
+def _faq_items() -> list[tuple[str, str]]:
+    out: list[tuple[str, str]] = []
+    for item in FAQ or []:
+        try:
+            q, a = item
+            q_s = str(q).strip()
+            a_s = str(a).strip()
+            if q_s and a_s:
+                out.append((q_s, a_s))
+        except Exception:
+            continue
+    return out
 
 
 def register_user_handlers(app, settings: Settings, services: dict):
@@ -192,8 +204,33 @@ def register_user_handlers(app, settings: Settings, services: dict):
             f"Пользователь: {name} ({username})\n"
             f"user_id: {uid}\n\n"
             f"Сообщение:\n{text}\n\n"
-            f"Ответ: /reply_ticket {tid} <текст>\n"
-            f"Просмотр: /ticket {tid}"
+            "Взаимодействуйте через админ-панель:\n"
+            "🛠 Админка -> 🆘 Тикеты"
+        )
+
+    def _faq_list_markup() -> InlineKeyboardMarkup:
+        rows = []
+        for idx, (q_text, _ans) in enumerate(_faq_items()):
+            rows.append([InlineKeyboardButton(q_text, callback_data=f"{HELP_FAQ_PREFIX}{idx}")])
+        rows.append([InlineKeyboardButton(HELP_ESCALATE_TEXT, callback_data=HELP_ESCALATE)])
+        return InlineKeyboardMarkup(rows)
+
+    @staticmethod
+    def _faq_answer_markup() -> InlineKeyboardMarkup:
+        return InlineKeyboardMarkup(
+            [
+                [InlineKeyboardButton(HELP_ESCALATE_TEXT, callback_data=HELP_ESCALATE)],
+                [InlineKeyboardButton("⬅️ К вопросам", callback_data=HELP_FAQ_LIST)],
+            ]
+        )
+
+    async def _start_support_ticket_flow(update: Update):
+        uid = update.effective_user.id
+        user_svc.set_step(uid, STEP_SUPPORT_WAIT_TEXT, {})
+        await update.effective_message.reply_text(
+            "Опиши проблему одним сообщением.\n"
+            "Я создам тикет и передам его администратору в раздел «🆘 Тикеты».",
+            reply_markup=menus.kb_back_only(),
         )
 
     # ----------------------------
@@ -516,6 +553,50 @@ def register_user_handlers(app, settings: Settings, services: dict):
         else:
             await q.edit_message_text("⚠️ Не нашёл привычку.")
 
+    async def help_faq_pick(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        q = update.callback_query
+        await q.answer()
+        data = (q.data or "").strip()
+
+        if data == HELP_FAQ_LIST:
+            await q.edit_message_text("❓ Помощь\n\nВыбери вопрос:", reply_markup=_faq_list_markup())
+            return
+
+        if data == HELP_ESCALATE:
+            user_svc.set_step(q.from_user.id, STEP_SUPPORT_WAIT_TEXT, {})
+            await q.edit_message_text(
+                "📨 Направить вопрос администрации\n\n"
+                "Опиши проблему одним сообщением в этот чат.\n"
+                "Я создам тикет и передам администратору.",
+            )
+            try:
+                await q.message.reply_text("Жду твоё описание 👇", reply_markup=menus.kb_back_only())
+            except Exception:
+                pass
+            return
+
+        if not data.startswith(HELP_FAQ_PREFIX):
+            return
+
+        raw_idx = data.replace(HELP_FAQ_PREFIX, "", 1)
+        if not raw_idx.isdigit():
+            await q.answer("Не смог распознать вопрос.", show_alert=False)
+            return
+
+        idx = int(raw_idx)
+        items = _faq_items()
+        if idx < 0 or idx >= len(items):
+            await q.answer("Этот пункт устарел. Открой помощь заново.", show_alert=False)
+            return
+
+        q_text, a_text = items[idx]
+        msg = (
+            f"❓ {q_text}\n\n"
+            f"{a_text}\n\n"
+            f"Если это не решило вопрос, нажми «{HELP_ESCALATE_TEXT}»."
+        )
+        await q.edit_message_text(msg, reply_markup=_faq_answer_markup())
+
     # ----------------------------
     # Text input steps (name / time / tz / custom enroll time)
     # ----------------------------
@@ -560,6 +641,7 @@ def register_user_handlers(app, settings: Settings, services: dict):
             texts.MENU_SETTINGS,
             texts.MENU_HELP,
             texts.HELP_NOT_HELPED,
+            texts.HELP_CONTACT_ADMIN,
             texts.MENU_ADMIN,
             texts.BTN_BACK,
             texts.DAY_QUOTE,
@@ -1246,6 +1328,7 @@ def register_user_handlers(app, settings: Settings, services: dict):
             texts.MENU_SETTINGS,
             texts.MENU_HELP,
             texts.HELP_NOT_HELPED,
+            texts.HELP_CONTACT_ADMIN,
             texts.MENU_ADMIN,
             texts.BTN_BACK,
             texts.DAY_QUOTE,
@@ -1317,18 +1400,11 @@ def register_user_handlers(app, settings: Settings, services: dict):
             raise ApplicationHandlerStop
 
         if text == texts.MENU_HELP:
-            await update.effective_message.reply_text(
-                _format_faq() + "\n\nЕсли ответ не помог — нажми «🆘 Это не помогло».",
-                reply_markup=menus.kb_help(),
-            )
+            await update.effective_message.reply_text("❓ Помощь\n\nВыбери вопрос:", reply_markup=_faq_list_markup())
             raise ApplicationHandlerStop
 
-        if text == texts.HELP_NOT_HELPED:
-            user_svc.set_step(uid, STEP_SUPPORT_WAIT_TEXT, {})
-            await update.effective_message.reply_text(
-                "Опиши проблему одним сообщением. Я передам это администратору.",
-                reply_markup=menus.kb_back_only(),
-            )
+        if text in (texts.HELP_NOT_HELPED, texts.HELP_CONTACT_ADMIN):
+            await _start_support_ticket_flow(update)
             raise ApplicationHandlerStop
 
         # Day submenu
@@ -1636,6 +1712,7 @@ def register_user_handlers(app, settings: Settings, services: dict):
     app.add_handler(CallbackQueryHandler(consent_pick, pattern=r"^consent:(yes|no)$"))
     app.add_handler(CallbackQueryHandler(tz_pick, pattern=r"^tz:.*"))
     app.add_handler(CallbackQueryHandler(enroll_time_pick, pattern=r"^" + re.escape(cb.ENROLL_TIME_PREFIX)))
+    app.add_handler(CallbackQueryHandler(help_faq_pick, pattern=r"^help:(faq:\d+|faq:list|escalate)$"))
 
     # Habits
     app.add_handler(CallbackQueryHandler(habit_freq_pick, pattern=r"^habit:freq:(daily|weekdays|weekends)$"))
