@@ -93,6 +93,13 @@ class AdminAnalyticsServiceTests(unittest.TestCase):
         self.assertIn("Ответов: 20", qtxt)
         self.assertIn("Personal reminders: created=4", rtxt)
 
+    def test_statistics_report_contains_business_metrics(self):
+        txt = self._svc().statistics_report(7)
+        self.assertIn("Активные пользователи: 55", txt)
+        self.assertIn("Средний прогресс:", txt)
+        self.assertIn("Процент выполнения:", txt)
+        self.assertIn("Результаты анкет: ответов=20", txt)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -7,12 +7,17 @@ class DummyRepo:
     def __init__(self):
         self.items = {}
         self.seq = 0
+        self.user_numbers = {}
 
     def create(self, user_id: int, question_text: str):
         self.seq += 1
+        uid = int(user_id)
+        next_number = int(self.user_numbers.get(uid) or 0) + 1
+        self.user_numbers[uid] = next_number
         row = {
             "id": self.seq,
-            "user_id": int(user_id),
+            "user_id": uid,
+            "number": next_number,
             "status": "open",
             "question_text": question_text,
             "admin_id": None,
@@ -62,11 +67,16 @@ class SupportServiceTests(unittest.TestCase):
         self.assertIsNone(svc.create_ticket(1, "   "))
         t1 = svc.create_ticket(1, "Нужна помощь")
         t2 = svc.create_ticket(2, "Проблема с заданием")
+        t3 = svc.create_ticket(1, "Еще вопрос")
         self.assertEqual(int(t1["id"]), 1)
         self.assertEqual(int(t2["id"]), 2)
+        self.assertEqual(int(t3["id"]), 3)
+        self.assertEqual(int(t1["number"]), 1)
+        self.assertEqual(int(t2["number"]), 1)
+        self.assertEqual(int(t3["number"]), 2)
 
         rows = svc.list_open(limit=10)
-        self.assertEqual([int(r["id"]) for r in rows], [2, 1])
+        self.assertEqual([int(r["id"]) for r in rows], [3, 2, 1])
 
     def test_reply_and_close_is_idempotent_for_closed_ticket(self):
         svc = self._svc()
@@ -84,4 +94,3 @@ class SupportServiceTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

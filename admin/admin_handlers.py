@@ -1,6 +1,7 @@
 import re
 import json
 import logging
+from datetime import datetime
 from telegram import Update, ReplyKeyboardMarkup, KeyboardButton
 from telegram.ext import ContextTypes, MessageHandler, filters, CommandHandler, ApplicationHandlerStop
 
@@ -28,12 +29,7 @@ BTN_NO = "Нет"
 BTN_PERIOD_TODAY = "Сегодня"
 BTN_PERIOD_7 = "7 дней"
 BTN_PERIOD_30 = "30 дней"
-BTN_A_SUMMARY = "📊 Сводка"
-BTN_A_FUNNEL = "🧭 Воронка"
-BTN_A_DELIVERY = "📬 Доставка"
-BTN_A_CONTENT = "📚 Контент"
-BTN_A_QUESTIONNAIRES = "📋 Анкеты"
-BTN_A_REMINDERS = "⏰ Ремайндеры"
+BTN_A_STATS = "📊 Статистика"
 
 # Tickets submenu
 BTN_T_OPEN = "🟡 Open"
@@ -64,7 +60,7 @@ def kb_admin_home():
         [
             [KeyboardButton(texts.ADMIN_LESSONS), KeyboardButton(texts.ADMIN_QUESTS)],
             [KeyboardButton(texts.ADMIN_QUESTIONNAIRES), KeyboardButton(texts.ADMIN_ANALYTICS)],
-            [KeyboardButton(texts.ADMIN_TICKETS)],
+            [KeyboardButton(texts.ADMIN_ACHIEVEMENTS), KeyboardButton(texts.ADMIN_TICKETS)],
             [KeyboardButton(texts.BTN_BACK)],
         ]
     )
@@ -84,9 +80,7 @@ def kb_admin_analytics():
     return kb(
         [
             [KeyboardButton(BTN_PERIOD_TODAY), KeyboardButton(BTN_PERIOD_7), KeyboardButton(BTN_PERIOD_30)],
-            [KeyboardButton(BTN_A_SUMMARY), KeyboardButton(BTN_A_FUNNEL)],
-            [KeyboardButton(BTN_A_DELIVERY), KeyboardButton(BTN_A_CONTENT)],
-            [KeyboardButton(BTN_A_QUESTIONNAIRES), KeyboardButton(BTN_A_REMINDERS)],
+            [KeyboardButton(BTN_A_STATS)],
             [KeyboardButton(texts.BTN_BACK)],
         ]
     )
@@ -107,6 +101,7 @@ def register_admin_handlers(app, settings: Settings, services: dict):
     admin_svc = services.get("admin")
     admin_analytics = services.get("admin_analytics")
     support_svc = services.get("support")
+    achievement_svc = services.get("achievement")
 
     def _is_admin(update: Update) -> bool:
         try:
@@ -157,6 +152,211 @@ def register_admin_handlers(app, settings: Settings, services: dict):
         _set_menu(uid, "questionnaires")
         await update.effective_message.reply_text("📋 Анкеты", reply_markup=kb_admin_actions(True))
 
+    async def _show_achievements_menu(update: Update):
+        uid = update.effective_user.id
+        _set_menu(uid, "achievements")
+        await update.effective_message.reply_text("🏆 Ачивки", reply_markup=kb_admin_actions(False))
+
+    ACH_METRIC_OPTIONS = [
+        ("Баллы", "points"),
+        ("Завершенные дни", "done_days"),
+        ("Серия дней", "streak"),
+        ("Привычки выполнено", "habit_done"),
+        ("Привычки пропущено", "habit_skipped"),
+        ("Анкет заполнено", "questionnaire_count"),
+    ]
+    ACH_OPERATOR_OPTIONS = [
+        ("не меньше", ">="),
+        ("больше", ">"),
+        ("равно", "="),
+        ("не больше", "<="),
+        ("меньше", "<"),
+    ]
+    OPERATOR_TOKEN = {
+        ">=": "ge",
+        ">": "gt",
+        "=": "eq",
+        "<=": "le",
+        "<": "lt",
+    }
+
+    def _achievement_metrics_hint() -> str:
+        lines = ["Доступные метрики:"]
+        for i, (label, key) in enumerate(ACH_METRIC_OPTIONS, 1):
+            lines.append(f"{i}. {label} ({key})")
+        lines.append("Введи номер или название.")
+        return "\n".join(lines)
+
+    def _achievement_operators_hint() -> str:
+        lines = ["Доступные операторы:"]
+        for i, (label, sym) in enumerate(ACH_OPERATOR_OPTIONS, 1):
+            lines.append(f"{i}. {label} ({sym})")
+        lines.append("Введи номер или оператор.")
+        return "\n".join(lines)
+
+    def _metric_label_by_key(metric_key: str) -> str:
+        key = (metric_key or "").strip()
+        for label, val in ACH_METRIC_OPTIONS:
+            if val == key:
+                return label
+        return key or "-"
+
+    def _operator_label_by_symbol(operator: str) -> str:
+        op = (operator or "").strip()
+        for label, val in ACH_OPERATOR_OPTIONS:
+            if val == op:
+                return label
+        return op or "-"
+
+    def _parse_metric_key(text: str) -> str | None:
+        raw = (text or "").strip()
+        if not raw:
+            return None
+        if raw.isdigit():
+            idx = int(raw)
+            if 1 <= idx <= len(ACH_METRIC_OPTIONS):
+                return ACH_METRIC_OPTIONS[idx - 1][1]
+        low = raw.lower()
+        for label, key in ACH_METRIC_OPTIONS:
+            if low in (label.lower(), key.lower()):
+                return key
+        return None
+
+    def _parse_operator_symbol(text: str) -> str | None:
+        raw = (text or "").strip()
+        if not raw:
+            return None
+        if raw.isdigit():
+            idx = int(raw)
+            if 1 <= idx <= len(ACH_OPERATOR_OPTIONS):
+                return ACH_OPERATOR_OPTIONS[idx - 1][1]
+        low = raw.lower()
+        for label, sym in ACH_OPERATOR_OPTIONS:
+            if raw == sym or low == label.lower():
+                return sym
+        return None
+
+    @staticmethod
+    def _slugify_ascii(raw: str) -> str:
+        s = (raw or "").strip().lower()
+        s = re.sub(r"[^a-z0-9]+", "_", s)
+        s = re.sub(r"_+", "_", s).strip("_")
+        return s
+
+    def _next_achievement_sort_order() -> int:
+        if not achievement_svc:
+            return 100
+        try:
+            rows = achievement_svc.list_rules(limit=500, active_only=None) or []
+        except Exception:
+            return 100
+        max_sort = 0
+        for row in rows:
+            try:
+                max_sort = max(max_sort, int(row.get("sort_order") or 0))
+            except Exception:
+                pass
+        if max_sort <= 0:
+            return 10
+        return ((max_sort // 10) + 1) * 10
+
+    def _generate_achievement_code(title: str, metric_key: str, operator: str, threshold: int) -> str:
+        base_title = _slugify_ascii(title)[:24]
+        op_token = OPERATOR_TOKEN.get(operator, "eq")
+        tail = f"{metric_key}_{op_token}_{abs(int(threshold))}"
+        if base_title:
+            base = f"{base_title}_{tail}"
+        else:
+            base = f"ach_{tail}"
+        base = re.sub(r"_+", "_", base).strip("_")
+        if len(base) < 3:
+            base = "ach_rule"
+        base = base[:64].strip("_")
+
+        if not achievement_svc:
+            return base
+        try:
+            rows = achievement_svc.list_rules(limit=1000, active_only=None) or []
+            existing = {str(r.get("code") or "").strip().lower() for r in rows}
+        except Exception:
+            existing = set()
+        if base.lower() not in existing:
+            return base
+        for i in range(2, 1000):
+            suffix = f"_{i}"
+            cand = base
+            if len(cand) + len(suffix) > 64:
+                cand = cand[: 64 - len(suffix)].rstrip("_")
+            cand = f"{cand}{suffix}"
+            if cand.lower() not in existing:
+                return cand
+        return f"ach_{int(datetime.now().timestamp())}"
+
+    def _parse_yes_no(text: str) -> bool | None:
+        value = (text or "").strip().lower()
+        if value in ("да", "yes", "y", "1", "true"):
+            return True
+        if value in ("нет", "no", "n", "0", "false"):
+            return False
+        return None
+
+    def _achievement_row_line(row: dict, pos: int) -> str:
+        state_label = "🟢" if bool(row.get("is_active")) else "⚪️"
+        metric_label = _metric_label_by_key(str(row.get("metric_key") or ""))
+        operator_label = _operator_label_by_symbol(str(row.get("operator") or ""))
+        return (
+            f"• №{int(pos)} {state_label} {row.get('code')} | "
+            f"{metric_label} {operator_label} {row.get('threshold')} | "
+            f"{row.get('icon')} {row.get('title')}"
+        )
+
+    def _find_achievement_rule(identifier: str) -> dict | None:
+        if not achievement_svc:
+            return None
+        raw = (identifier or "").strip()
+        if not raw:
+            return None
+        token = raw
+        if token.startswith("№"):
+            pos_token = token[1:].strip()
+            if pos_token.isdigit():
+                try:
+                    rows = achievement_svc.list_rules(limit=500, active_only=None) or []
+                except Exception:
+                    return None
+                pos = int(pos_token)
+                if 1 <= pos <= len(rows):
+                    return rows[pos - 1]
+            return None
+        if token.startswith("#"):
+            token = token[1:]
+        token = token.strip()
+        if token.isdigit():
+            try:
+                row = achievement_svc.get_rule(int(token))
+                if row:
+                    return row
+            except Exception:
+                pass
+            # Fallback: allow entering list position number (1..N).
+            try:
+                rows = achievement_svc.list_rules(limit=500, active_only=None) or []
+            except Exception:
+                return None
+            pos = int(token)
+            if 1 <= pos <= len(rows):
+                return rows[pos - 1]
+            return None
+        code = token.lower()
+        try:
+            rows = achievement_svc.list_rules(limit=500, active_only=None)
+        except Exception:
+            return None
+        for row in rows:
+            if str(row.get("code") or "").strip().lower() == code:
+                return row
+        return None
+
     async def _show_analytics_menu(update: Update, days: int = 7):
         uid = update.effective_user.id
         safe_days = 7
@@ -169,7 +369,7 @@ def register_admin_handlers(app, settings: Settings, services: dict):
         _set_menu(uid, "analytics", {"days": safe_days})
         label = "Сегодня" if safe_days == 1 else f"Последние {safe_days} дней"
         await update.effective_message.reply_text(
-            f"📈 Аналитика\nПериод: {label}\n\nВыбери отчёт:",
+            f"📈 Аналитика\nПериод: {label}\n\nНажми «{BTN_A_STATS}».",
             reply_markup=kb_admin_analytics(),
         )
 
@@ -227,18 +427,33 @@ def register_admin_handlers(app, settings: Settings, services: dict):
             return "✅ closed"
         return s or "-"
 
+    def _ticket_number(row: dict) -> int:
+        try:
+            tid = int(row.get("id") or 0)
+        except Exception:
+            tid = 0
+        try:
+            num = int(row.get("number") or 0)
+        except Exception:
+            num = 0
+        return num if num > 0 else tid
+
     def _ticket_preview(row: dict) -> str:
         txt = (row.get("question_text") or "").replace("\n", " ").strip()
         if len(txt) > 70:
             txt = txt[:67] + "..."
+        tid = int(row.get("id") or 0)
+        tnum = _ticket_number(row)
         return (
-            f"• #{row.get('id')} [{_ticket_status_label(row.get('status'))}] "
+            f"• №{tnum} (id={tid}) [{_ticket_status_label(row.get('status'))}] "
             f"user={row.get('user_id')} — {txt}"
         )
 
     def _ticket_details(row: dict) -> str:
+        tid = int(row.get("id") or 0)
+        tnum = _ticket_number(row)
         base = [
-            f"🆘 Тикет #{row.get('id')}",
+            f"🆘 Тикет №{tnum} (id={tid})",
             f"Статус: {_ticket_status_label(row.get('status'))}",
             f"user_id: {row.get('user_id')}",
             f"Создан: {row.get('created_at')}",
@@ -293,8 +508,10 @@ def register_admin_handlers(app, settings: Settings, services: dict):
             )
             return False
 
+        ticket_id_internal = int(row.get("id") or ticket_id or 0)
+        ticket_number = _ticket_number(row)
         user_id = int(row.get("user_id") or 0)
-        user_msg = f"💬 Ответ поддержки по тикету #{int(ticket_id)}:\n{reply_text}"
+        user_msg = f"💬 Ответ поддержки по заявке №{ticket_number}:\n{reply_text}"
         sent_ok = True
         try:
             await context.bot.send_message(chat_id=user_id, text=user_msg)
@@ -303,7 +520,7 @@ def register_admin_handlers(app, settings: Settings, services: dict):
 
         tail = "" if sent_ok else "\n⚠️ Пользователю отправить не удалось (проверь chat доступность)."
         await update.effective_message.reply_text(
-            f"✅ Тикет #{int(ticket_id)} закрыт и обработан.{tail}",
+            f"✅ Заявка №{ticket_number} (id={ticket_id_internal}) закрыта и обработана.{tail}",
             reply_markup=reply_markup,
         )
         return True
@@ -407,6 +624,49 @@ def register_admin_handlers(app, settings: Settings, services: dict):
         state.set_state(uid, ADMIN_WIZARD_STEP, {"mode": "qcast_question"})
         await update.effective_message.reply_text("🎲 Рандомная анкета всем\n\nВведи вопрос анкеты одним сообщением.")
 
+    async def achievements_list(update: Update):
+        if not achievement_svc:
+            await update.effective_message.reply_text(
+                "⚠️ Сервис ачивок не подключён.",
+                reply_markup=kb_admin_actions(False),
+            )
+            return
+        rows = achievement_svc.list_rules(limit=200, active_only=None)
+        if not rows:
+            await update.effective_message.reply_text(
+                "🏆 Правила ачивок: пока пусто.",
+                reply_markup=kb_admin_actions(False),
+            )
+            return
+        lines = ["🏆 Правила ачивок (№, code, условие):", ""]
+        lines.extend(_achievement_row_line(r, i + 1) for i, r in enumerate(rows))
+        await update.effective_message.reply_text(
+            "\n".join(lines),
+            reply_markup=kb_admin_actions(False),
+        )
+
+    async def achievements_create(update: Update):
+        uid = update.effective_user.id
+        state.set_state(uid, ADMIN_WIZARD_STEP, {"mode": "a_create_title"})
+        await update.effective_message.reply_text(
+            "➕ Создание ачивки\n\n"
+            "Шаг 1/7. Введи название ачивки.",
+        )
+
+    async def achievements_edit(update: Update):
+        uid = update.effective_user.id
+        state.set_state(uid, ADMIN_WIZARD_STEP, {"mode": "a_edit_id"})
+        await update.effective_message.reply_text(
+            "✏️ Редактирование ачивки\n\nВведи code, ID или номер из списка (например №9)."
+        )
+
+    async def achievements_delete(update: Update):
+        uid = update.effective_user.id
+        state.set_state(uid, ADMIN_WIZARD_STEP, {"mode": "a_delete_id"})
+        await update.effective_message.reply_text(
+            "🗑 Удаление ачивки\n\nВведи code, ID или номер из списка (например №9)."
+        )
+
     # ----------------------------
     # Reply-based menu router
     # ----------------------------
@@ -456,7 +716,7 @@ def register_admin_handlers(app, settings: Settings, services: dict):
         if text == texts.BTN_BACK:
             screen0 = (screen or "home").lower()
 
-            if screen0 in ("lessons", "quests", "questionnaires", "analytics", "tickets"):
+            if screen0 in ("lessons", "quests", "questionnaires", "analytics", "achievements", "tickets"):
                 await _show_admin_home(update)
                 raise ApplicationHandlerStop
 
@@ -474,6 +734,8 @@ def register_admin_handlers(app, settings: Settings, services: dict):
                 await _show_q_menu(update); raise ApplicationHandlerStop
             if text == texts.ADMIN_ANALYTICS:
                 await _show_analytics_menu(update, 7); raise ApplicationHandlerStop
+            if text == texts.ADMIN_ACHIEVEMENTS:
+                await _show_achievements_menu(update); raise ApplicationHandlerStop
             if text == texts.ADMIN_TICKETS:
                 await _show_tickets_menu(update, "open", 20); raise ApplicationHandlerStop
 
@@ -495,23 +757,11 @@ def register_admin_handlers(app, settings: Settings, services: dict):
                 await update.effective_message.reply_text("⚠️ Сервис аналитики не подключён.", reply_markup=kb_admin_analytics())
                 raise ApplicationHandlerStop
 
-            if text == BTN_A_SUMMARY:
-                await update.effective_message.reply_text(admin_analytics.summary_report(days), reply_markup=kb_admin_analytics())
-                raise ApplicationHandlerStop
-            if text == BTN_A_FUNNEL:
-                await update.effective_message.reply_text(admin_analytics.funnel_report(days), reply_markup=kb_admin_analytics())
-                raise ApplicationHandlerStop
-            if text == BTN_A_DELIVERY:
-                await update.effective_message.reply_text(admin_analytics.delivery_report(days), reply_markup=kb_admin_analytics())
-                raise ApplicationHandlerStop
-            if text == BTN_A_CONTENT:
-                await update.effective_message.reply_text(admin_analytics.content_report(days), reply_markup=kb_admin_analytics())
-                raise ApplicationHandlerStop
-            if text == BTN_A_QUESTIONNAIRES:
-                await update.effective_message.reply_text(admin_analytics.questionnaires_report(days), reply_markup=kb_admin_analytics())
-                raise ApplicationHandlerStop
-            if text == BTN_A_REMINDERS:
-                await update.effective_message.reply_text(admin_analytics.reminders_report(days), reply_markup=kb_admin_analytics())
+            if text == BTN_A_STATS:
+                await update.effective_message.reply_text(
+                    admin_analytics.statistics_report(days),
+                    reply_markup=kb_admin_analytics(),
+                )
                 raise ApplicationHandlerStop
 
         if screen == "lessons":
@@ -532,6 +782,12 @@ def register_admin_handlers(app, settings: Settings, services: dict):
             if text == BTN_EDIT: await q_edit(update); raise ApplicationHandlerStop
             if text == BTN_DELETE: await q_delete(update); raise ApplicationHandlerStop
             if text == BTN_RANDOM_Q: await q_random(update); raise ApplicationHandlerStop
+
+        if screen == "achievements":
+            if text == BTN_LIST: await achievements_list(update); raise ApplicationHandlerStop
+            if text == BTN_CREATE: await achievements_create(update); raise ApplicationHandlerStop
+            if text == BTN_EDIT: await achievements_edit(update); raise ApplicationHandlerStop
+            if text == BTN_DELETE: await achievements_delete(update); raise ApplicationHandlerStop
 
         if screen == "tickets":
             payload0 = payload or {}
@@ -586,6 +842,41 @@ def register_admin_handlers(app, settings: Settings, services: dict):
         if not st or st.get("step") != ADMIN_WIZARD_STEP:
             return
 
+        # Allow leaving admin wizard by pressing main menu sections.
+        if text in (texts.MENU_DAY, texts.MENU_PROGRESS, texts.MENU_SETTINGS, texts.MENU_HELP):
+            state.clear_state(uid)
+            return
+
+        # Quick jump inside admin while wizard is active.
+        if text == texts.MENU_ADMIN:
+            state.clear_state(uid)
+            await _show_admin_home(update)
+            raise ApplicationHandlerStop
+        if text == texts.ADMIN_LESSONS:
+            state.clear_state(uid)
+            await _show_lessons_menu(update)
+            raise ApplicationHandlerStop
+        if text == texts.ADMIN_QUESTS:
+            state.clear_state(uid)
+            await _show_quests_menu(update)
+            raise ApplicationHandlerStop
+        if text == texts.ADMIN_QUESTIONNAIRES:
+            state.clear_state(uid)
+            await _show_q_menu(update)
+            raise ApplicationHandlerStop
+        if text == texts.ADMIN_ANALYTICS:
+            state.clear_state(uid)
+            await _show_analytics_menu(update, 7)
+            raise ApplicationHandlerStop
+        if text == texts.ADMIN_ACHIEVEMENTS:
+            state.clear_state(uid)
+            await _show_achievements_menu(update)
+            raise ApplicationHandlerStop
+        if text == texts.ADMIN_TICKETS:
+            state.clear_state(uid)
+            await _show_tickets_menu(update, "open", 20)
+            raise ApplicationHandlerStop
+
         # Allow leaving wizard with Back
         if text == texts.BTN_BACK:
             payload0 = st.get("payload_json") or {}
@@ -605,6 +896,8 @@ def register_admin_handlers(app, settings: Settings, services: dict):
                 await _show_quests_menu(update)
             elif mode0.startswith("q_") or mode0.startswith("qcast_"):
                 await _show_q_menu(update)
+            elif mode0.startswith("a_"):
+                await _show_achievements_menu(update)
             elif mode0.startswith("t_"):
                 back_mode = _safe_tickets_mode(payload0.get("return_mode"))
                 back_limit = _safe_tickets_limit(payload0.get("return_limit"))
@@ -616,6 +909,70 @@ def register_admin_handlers(app, settings: Settings, services: dict):
         if isinstance(payload, str):
             payload = json.loads(payload)
         mode = payload.get("mode")
+        mode_s = str(mode or "").lower()
+
+        # Quick action buttons should switch wizard mode and never be treated as step input.
+        if mode_s.startswith("l_"):
+            if text == BTN_LIST:
+                state.clear_state(uid); await _show_lessons_menu(update); await lessons_list(update); raise ApplicationHandlerStop
+            if text == BTN_CREATE:
+                await lessons_create(update); raise ApplicationHandlerStop
+            if text == BTN_EDIT:
+                await lessons_edit(update); raise ApplicationHandlerStop
+            if text == BTN_DELETE:
+                await lessons_delete(update); raise ApplicationHandlerStop
+
+        if mode_s.startswith("qst_"):
+            if text == BTN_LIST:
+                state.clear_state(uid); await _show_quests_menu(update); await quests_list(update); raise ApplicationHandlerStop
+            if text == BTN_CREATE:
+                await quests_create(update); raise ApplicationHandlerStop
+            if text == BTN_EDIT:
+                await quests_edit(update); raise ApplicationHandlerStop
+            if text == BTN_DELETE:
+                await quests_delete(update); raise ApplicationHandlerStop
+
+        if mode_s.startswith("q_") or mode_s.startswith("qcast_"):
+            if text == BTN_LIST:
+                state.clear_state(uid); await _show_q_menu(update); await q_list(update); raise ApplicationHandlerStop
+            if text == BTN_CREATE:
+                await q_create(update); raise ApplicationHandlerStop
+            if text == BTN_EDIT:
+                await q_edit(update); raise ApplicationHandlerStop
+            if text == BTN_DELETE:
+                await q_delete(update); raise ApplicationHandlerStop
+            if text == BTN_RANDOM_Q:
+                await q_random(update); raise ApplicationHandlerStop
+
+        if mode_s.startswith("a_"):
+            if text == BTN_LIST:
+                state.clear_state(uid); await _show_achievements_menu(update); await achievements_list(update); raise ApplicationHandlerStop
+            if text == BTN_CREATE:
+                await achievements_create(update); raise ApplicationHandlerStop
+            if text == BTN_EDIT:
+                await achievements_edit(update); raise ApplicationHandlerStop
+            if text == BTN_DELETE:
+                await achievements_delete(update); raise ApplicationHandlerStop
+
+        if mode_s.startswith("t_"):
+            return_mode = _safe_tickets_mode(payload.get("return_mode"))
+            return_limit = _safe_tickets_limit(payload.get("return_limit"))
+            if text == BTN_T_OPEN:
+                state.clear_state(uid); await _show_tickets_menu(update, "open", return_limit); raise ApplicationHandlerStop
+            if text == BTN_T_ALL:
+                state.clear_state(uid); await _show_tickets_menu(update, "all", return_limit); raise ApplicationHandlerStop
+            if text == BTN_T_VIEW:
+                state.set_state(uid, ADMIN_WIZARD_STEP, {"mode": "t_view_id", "return_mode": return_mode, "return_limit": return_limit})
+                await update.effective_message.reply_text("Введи ID тикета (число).")
+                raise ApplicationHandlerStop
+            if text == BTN_T_REPLY:
+                state.set_state(uid, ADMIN_WIZARD_STEP, {"mode": "t_reply_id", "return_mode": return_mode, "return_limit": return_limit})
+                await update.effective_message.reply_text("Введи ID тикета, на который нужно ответить.")
+                raise ApplicationHandlerStop
+            if text == BTN_T_CLOSE:
+                state.set_state(uid, ADMIN_WIZARD_STEP, {"mode": "t_close_id", "return_mode": return_mode, "return_limit": return_limit})
+                await update.effective_message.reply_text("Введи ID тикета, который нужно закрыть.")
+                raise ApplicationHandlerStop
 
         # --- Lessons wizard ---
         if mode in ("l_create_day", "l_edit_day", "l_delete_day"):
@@ -782,6 +1139,315 @@ def register_admin_handlers(app, settings: Settings, services: dict):
             await update.effective_message.reply_text("✅ Удалено" if ok else "⚠️ Не найдено")
             return
 
+        # --- Achievements wizard ---
+        if mode == "a_create_code":
+            # Backward compatibility for previously stored wizard states.
+            payload = {"mode": "a_create_desc", "title": text.strip()}
+            state.set_state(uid, ADMIN_WIZARD_STEP, payload)
+            await update.effective_message.reply_text("Шаг 2/7. Введи описание ачивки.")
+            return
+
+        if mode == "a_create_title":
+            title = text.strip()
+            if not title:
+                await update.effective_message.reply_text("Название не должно быть пустым."); raise ApplicationHandlerStop
+            payload["title"] = title
+            payload["mode"] = "a_create_desc"
+            state.set_state(uid, ADMIN_WIZARD_STEP, payload)
+            await update.effective_message.reply_text("Шаг 2/7. Введи описание ачивки.")
+            return
+
+        if mode == "a_create_desc":
+            description = text.strip()
+            if not description:
+                await update.effective_message.reply_text("Описание не должно быть пустым."); raise ApplicationHandlerStop
+            payload["description"] = description
+            payload["mode"] = "a_create_icon"
+            state.set_state(uid, ADMIN_WIZARD_STEP, payload)
+            await update.effective_message.reply_text(
+                "Шаг 3/7. Введи иконку (emoji) или '-' для значения по умолчанию 🏅."
+            )
+            return
+
+        if mode == "a_create_icon":
+            payload["icon"] = "🏅" if text.strip() == "-" else (text.strip() or "🏅")
+            payload["mode"] = "a_create_metric"
+            state.set_state(uid, ADMIN_WIZARD_STEP, payload)
+            await update.effective_message.reply_text(
+                f"Шаг 4/7. Выбери метрику.\n{_achievement_metrics_hint()}"
+            )
+            return
+
+        if mode == "a_create_metric":
+            metric_key = _parse_metric_key(text)
+            if not metric_key:
+                await update.effective_message.reply_text(
+                    f"Не понял метрику.\n{_achievement_metrics_hint()}"
+                )
+                raise ApplicationHandlerStop
+            payload["metric_key"] = metric_key
+            payload["mode"] = "a_create_op"
+            state.set_state(uid, ADMIN_WIZARD_STEP, payload)
+            await update.effective_message.reply_text(
+                f"Шаг 5/7. Выбери оператор.\n{_achievement_operators_hint()}"
+            )
+            return
+
+        if mode == "a_create_op":
+            operator = _parse_operator_symbol(text)
+            if not operator:
+                await update.effective_message.reply_text(
+                    f"Не понял оператор.\n{_achievement_operators_hint()}"
+                )
+                raise ApplicationHandlerStop
+            payload["operator"] = operator
+            payload["mode"] = "a_create_threshold"
+            state.set_state(uid, ADMIN_WIZARD_STEP, payload)
+            await update.effective_message.reply_text("Шаг 6/7. Введи порог (целое число).")
+            return
+
+        if mode == "a_create_threshold":
+            if not re.match(r"^-?\d+$", text.strip()):
+                await update.effective_message.reply_text("Порог должен быть целым числом."); raise ApplicationHandlerStop
+            payload["threshold"] = int(text.strip())
+            payload["mode"] = "a_create_active"
+            state.set_state(uid, ADMIN_WIZARD_STEP, payload)
+            await update.effective_message.reply_text("Шаг 7/7. Активна? (Да/Нет)")
+            return
+
+        if mode == "a_create_active":
+            active = _parse_yes_no(text)
+            if active is None:
+                await update.effective_message.reply_text("Введи 'Да' или 'Нет'."); raise ApplicationHandlerStop
+            payload["is_active"] = active
+            if not achievement_svc:
+                state.clear_state(uid)
+                await _show_achievements_menu(update)
+                await update.effective_message.reply_text("⚠️ Сервис ачивок не подключён.")
+                return
+            metric_key = str(payload.get("metric_key") or "").strip()
+            operator = str(payload.get("operator") or "").strip()
+            threshold = int(payload.get("threshold") or 0)
+            code = _generate_achievement_code(
+                title=str(payload.get("title") or ""),
+                metric_key=metric_key,
+                operator=operator,
+                threshold=threshold,
+            )
+            sort_order = _next_achievement_sort_order()
+            try:
+                row = achievement_svc.create_rule(
+                    code=code,
+                    title=payload.get("title"),
+                    description=payload.get("description"),
+                    icon=payload.get("icon"),
+                    metric_key=metric_key,
+                    operator=operator,
+                    threshold=threshold,
+                    is_active=payload.get("is_active"),
+                    sort_order=sort_order,
+                )
+            except Exception as e:
+                await update.effective_message.reply_text(f"⚠️ Не удалось создать правило: {e}")
+                raise ApplicationHandlerStop
+            state.clear_state(uid)
+            await _show_achievements_menu(update)
+            if not row:
+                await update.effective_message.reply_text("⚠️ Не удалось создать правило.")
+                return
+            await update.effective_message.reply_text(
+                f"✅ Правило создано: code={str(row.get('code') or '').strip()}"
+            )
+            return
+
+        if mode == "a_edit_id":
+            if not achievement_svc:
+                state.clear_state(uid)
+                await _show_achievements_menu(update)
+                await update.effective_message.reply_text("⚠️ Сервис ачивок не подключён.")
+                return
+            row = _find_achievement_rule(text)
+            if not row:
+                await update.effective_message.reply_text("⚠️ Правило не найдено. Введи code, ID или № из списка."); raise ApplicationHandlerStop
+            rid = int(row.get("id") or 0)
+            payload = {
+                "mode": "a_edit_title",
+                "id": rid,
+                "code": row.get("code"),
+                "title": row.get("title"),
+                "description": row.get("description"),
+                "icon": row.get("icon"),
+                "metric_key": row.get("metric_key"),
+                "operator": row.get("operator"),
+                "threshold": int(row.get("threshold") or 0),
+                "is_active": bool(row.get("is_active")),
+                "sort_order": int(row.get("sort_order") or 100),
+            }
+            state.set_state(uid, ADMIN_WIZARD_STEP, payload)
+            await update.effective_message.reply_text(
+                f"Редактируем правило code={payload['code']}.\n"
+                f"Текущее название: {payload['title']}\n"
+                "Введи новое название или '-' чтобы оставить."
+            )
+            return
+
+        if mode == "a_edit_code":
+            # Backward compatibility for previously stored wizard states.
+            if text.strip() != "-":
+                payload["code"] = text.strip().lower()
+            payload["mode"] = "a_edit_title"
+            state.set_state(uid, ADMIN_WIZARD_STEP, payload)
+            await update.effective_message.reply_text(
+                f"Текущее название: {payload['title']}\nВведи новое название или '-' чтобы оставить."
+            )
+            return
+
+        if mode == "a_edit_title":
+            if text.strip() != "-":
+                payload["title"] = text.strip()
+            payload["mode"] = "a_edit_desc"
+            state.set_state(uid, ADMIN_WIZARD_STEP, payload)
+            await update.effective_message.reply_text("Введи новое описание или '-' чтобы оставить текущее.")
+            return
+
+        if mode == "a_edit_desc":
+            if text.strip() != "-":
+                payload["description"] = text.strip()
+            payload["mode"] = "a_edit_icon"
+            state.set_state(uid, ADMIN_WIZARD_STEP, payload)
+            await update.effective_message.reply_text(
+                f"Текущая иконка: {payload['icon']}\nВведи новую или '-' чтобы оставить."
+            )
+            return
+
+        if mode == "a_edit_icon":
+            if text.strip() != "-":
+                payload["icon"] = text.strip() or payload.get("icon") or "🏅"
+            payload["mode"] = "a_edit_metric"
+            state.set_state(uid, ADMIN_WIZARD_STEP, payload)
+            await update.effective_message.reply_text(
+                f"Текущая метрика: {_metric_label_by_key(str(payload.get('metric_key') or ''))} "
+                f"({payload['metric_key']})\n"
+                f"Введи новую или '-' чтобы оставить.\n{_achievement_metrics_hint()}"
+            )
+            return
+
+        if mode == "a_edit_metric":
+            if text.strip() != "-":
+                metric_key = _parse_metric_key(text)
+                if not metric_key:
+                    await update.effective_message.reply_text(
+                        f"Не понял метрику.\n{_achievement_metrics_hint()}"
+                    )
+                    raise ApplicationHandlerStop
+                payload["metric_key"] = metric_key
+            payload["mode"] = "a_edit_op"
+            state.set_state(uid, ADMIN_WIZARD_STEP, payload)
+            await update.effective_message.reply_text(
+                f"Текущий оператор: {_operator_label_by_symbol(payload['operator'])} ({payload['operator']})\n"
+                f"Введи новый или '-' чтобы оставить.\n{_achievement_operators_hint()}"
+            )
+            return
+
+        if mode == "a_edit_op":
+            if text.strip() != "-":
+                operator = _parse_operator_symbol(text)
+                if not operator:
+                    await update.effective_message.reply_text(
+                        f"Не понял оператор.\n{_achievement_operators_hint()}"
+                    )
+                    raise ApplicationHandlerStop
+                payload["operator"] = operator
+            payload["mode"] = "a_edit_threshold"
+            state.set_state(uid, ADMIN_WIZARD_STEP, payload)
+            await update.effective_message.reply_text(
+                f"Текущий порог: {payload['threshold']}\nВведи новый или '-' чтобы оставить."
+            )
+            return
+
+        if mode == "a_edit_threshold":
+            if text.strip() != "-":
+                if not re.match(r"^-?\d+$", text.strip()):
+                    await update.effective_message.reply_text("Порог должен быть целым числом."); raise ApplicationHandlerStop
+                payload["threshold"] = int(text.strip())
+            payload["mode"] = "a_edit_active"
+            state.set_state(uid, ADMIN_WIZARD_STEP, payload)
+            active_label = "Да" if payload.get("is_active") else "Нет"
+            await update.effective_message.reply_text(
+                f"Сейчас активна: {active_label}\nВведи Да/Нет или '-' чтобы оставить."
+            )
+            return
+
+        if mode == "a_edit_active":
+            if text.strip() != "-":
+                active = _parse_yes_no(text)
+                if active is None:
+                    await update.effective_message.reply_text("Введи 'Да', 'Нет' или '-'."); raise ApplicationHandlerStop
+                payload["is_active"] = active
+            payload["mode"] = "a_edit_sort"
+            state.set_state(uid, ADMIN_WIZARD_STEP, payload)
+            await update.effective_message.reply_text(
+                f"Текущий порядок показа: {payload['sort_order']}\n"
+                "Введи новый порядок (например 10/20/30) или '-' чтобы оставить."
+            )
+            return
+
+        if mode == "a_edit_sort":
+            if text.strip() != "-":
+                if not re.match(r"^-?\d+$", text.strip()):
+                    await update.effective_message.reply_text("Порядок должен быть целым числом."); raise ApplicationHandlerStop
+                payload["sort_order"] = int(text.strip())
+            if not achievement_svc:
+                state.clear_state(uid)
+                await _show_achievements_menu(update)
+                await update.effective_message.reply_text("⚠️ Сервис ачивок не подключён.")
+                return
+            try:
+                row = achievement_svc.update_rule(
+                    rule_id=int(payload.get("id")),
+                    code=payload.get("code"),
+                    title=payload.get("title"),
+                    description=payload.get("description"),
+                    icon=payload.get("icon"),
+                    metric_key=payload.get("metric_key"),
+                    operator=payload.get("operator"),
+                    threshold=payload.get("threshold"),
+                    is_active=payload.get("is_active"),
+                    sort_order=payload.get("sort_order"),
+                )
+            except Exception as e:
+                await update.effective_message.reply_text(f"⚠️ Не удалось обновить правило: {e}")
+                raise ApplicationHandlerStop
+            state.clear_state(uid)
+            await _show_achievements_menu(update)
+            if not row:
+                await update.effective_message.reply_text("⚠️ Правило не найдено.")
+                return
+            await update.effective_message.reply_text(
+                f"✅ Правило обновлено: code={str(row.get('code') or '').strip()}"
+            )
+            return
+
+        if mode == "a_delete_id":
+            if not achievement_svc:
+                state.clear_state(uid)
+                await _show_achievements_menu(update)
+                await update.effective_message.reply_text("⚠️ Сервис ачивок не подключён.")
+                return
+            row = _find_achievement_rule(text)
+            if not row:
+                await update.effective_message.reply_text("⚠️ Правило не найдено. Введи code, ID или № из списка."); raise ApplicationHandlerStop
+            rid = int(row.get("id") or 0)
+            code = str(row.get("code") or "").strip()
+            ok = achievement_svc.delete_rule(rid)
+            state.clear_state(uid)
+            await _show_achievements_menu(update)
+            if ok:
+                await update.effective_message.reply_text(f"✅ Правило удалено: code={code}")
+            else:
+                await update.effective_message.reply_text("⚠️ Не найдено")
+            return
+
         # --- Tickets wizard ---
         if mode == "t_view_id":
             if not re.match(r"^\d+$", text):
@@ -812,9 +1478,12 @@ def register_admin_handlers(app, settings: Settings, services: dict):
             if not row:
                 await update.effective_message.reply_text("Тикет не найден."); raise ApplicationHandlerStop
             payload["ticket_id"] = tid
+            payload["ticket_number"] = _ticket_number(row)
             payload["mode"] = "t_reply_text"
             state.set_state(uid, ADMIN_WIZARD_STEP, payload)
-            await update.effective_message.reply_text(f"Тикет #{tid}.\nВведи текст ответа пользователю.")
+            await update.effective_message.reply_text(
+                f"Заявка №{payload['ticket_number']} (id={tid}).\nВведи текст ответа пользователю."
+            )
             return
 
         if mode == "t_reply_text":
@@ -855,7 +1524,10 @@ def register_admin_handlers(app, settings: Settings, services: dict):
                     reply_markup=kb_admin_tickets(),
                 )
                 return
-            await update.effective_message.reply_text(f"✅ Тикет #{tid} закрыт.", reply_markup=kb_admin_tickets())
+            await update.effective_message.reply_text(
+                f"✅ Заявка №{_ticket_number(row)} (id={int(row.get('id') or tid)}) закрыта.",
+                reply_markup=kb_admin_tickets(),
+            )
             return
 
         # --- Broadcast random questionnaire to all ---

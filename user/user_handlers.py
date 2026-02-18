@@ -198,9 +198,10 @@ def register_user_handlers(app, settings: Settings, services: dict):
         name = (u.first_name or u.full_name or "").strip() or "Без имени"
         text = (ticket.get("question_text") or "").strip()
         tid = int(ticket.get("id") or 0)
+        tnum = int(ticket.get("number") or tid or 0)
         uid = int(ticket.get("user_id") or 0)
         return (
-            f"🆘 Новый тикет #{tid}\n"
+            f"🆘 Новый тикет №{tnum} (id={tid})\n"
             f"Пользователь: {name} ({username})\n"
             f"user_id: {uid}\n\n"
             f"Сообщение:\n{text}\n\n"
@@ -1218,8 +1219,9 @@ def register_user_handlers(app, settings: Settings, services: dict):
                 raise ApplicationHandlerStop
 
             tid = int(ticket.get("id") or 0)
+            tnum = int(ticket.get("number") or tid or 0)
             await update.effective_message.reply_text(
-                f"✅ Принято. Тикет #{tid} передан администратору.\n"
+                f"✅ Принято. Заявка №{tnum} передана администратору.\n"
                 "Когда будет ответ, я пришлю его сюда.",
                 reply_markup=menus.kb_main(_is_admin(uid)),
             )

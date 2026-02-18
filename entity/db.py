@@ -91,9 +91,28 @@ CREATE TABLE IF NOT EXISTS user_achievements (
   UNIQUE(user_id, code)
 );
 
+CREATE TABLE IF NOT EXISTS achievement_rules (
+  id SERIAL PRIMARY KEY,
+  code TEXT NOT NULL UNIQUE,
+  title TEXT NOT NULL,
+  description TEXT NOT NULL,
+  icon TEXT NOT NULL DEFAULT '🏅',
+  metric_key TEXT NOT NULL,
+  "operator" TEXT NOT NULL DEFAULT '>=',
+  threshold INT NOT NULL DEFAULT 1,
+  is_active BOOLEAN NOT NULL DEFAULT TRUE,
+  sort_order INT NOT NULL DEFAULT 100,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_achievement_rules_active_order
+ON achievement_rules(is_active, sort_order, id);
+
 CREATE TABLE IF NOT EXISTS support_tickets (
   id SERIAL PRIMARY KEY,
   user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  number INT NOT NULL,
   status TEXT NOT NULL DEFAULT 'open', -- open | closed
   question_text TEXT NOT NULL,
   admin_id BIGINT,
@@ -105,6 +124,7 @@ CREATE TABLE IF NOT EXISTS support_tickets (
 
 CREATE INDEX IF NOT EXISTS idx_support_tickets_status_created ON support_tickets(status, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_support_tickets_user_created ON support_tickets(user_id, created_at DESC);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_support_tickets_user_number ON support_tickets(user_id, number);
 
 CREATE TABLE IF NOT EXISTS questionnaires (
   id SERIAL PRIMARY KEY,
@@ -247,10 +267,41 @@ MIGRATIONS_SQL = [
     "CREATE TABLE IF NOT EXISTS daily_items (id SERIAL PRIMARY KEY, set_id INT NOT NULL REFERENCES daily_sets(id) ON DELETE CASCADE, kind TEXT NOT NULL, title TEXT, content_text TEXT NOT NULL, payload_json JSONB, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), UNIQUE(set_id, kind))",
     # Achievements
     "CREATE TABLE IF NOT EXISTS user_achievements (id SERIAL PRIMARY KEY, user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE, code TEXT NOT NULL, title TEXT NOT NULL, description TEXT NOT NULL, icon TEXT NOT NULL DEFAULT '🏅', payload_json JSONB, awarded_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), UNIQUE(user_id, code))",
+    "CREATE TABLE IF NOT EXISTS achievement_rules (id SERIAL PRIMARY KEY, code TEXT NOT NULL UNIQUE, title TEXT NOT NULL, description TEXT NOT NULL, icon TEXT NOT NULL DEFAULT '🏅', metric_key TEXT NOT NULL, \"operator\" TEXT NOT NULL DEFAULT '>=', threshold INT NOT NULL DEFAULT 1, is_active BOOLEAN NOT NULL DEFAULT TRUE, sort_order INT NOT NULL DEFAULT 100, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW())",
+    "CREATE INDEX IF NOT EXISTS idx_achievement_rules_active_order ON achievement_rules(is_active, sort_order, id)",
+    "ALTER TABLE achievement_rules ADD COLUMN IF NOT EXISTS icon TEXT NOT NULL DEFAULT '🏅'",
+    "ALTER TABLE achievement_rules ADD COLUMN IF NOT EXISTS metric_key TEXT NOT NULL DEFAULT 'points'",
+    "ALTER TABLE achievement_rules ADD COLUMN IF NOT EXISTS \"operator\" TEXT NOT NULL DEFAULT '>='",
+    "ALTER TABLE achievement_rules ADD COLUMN IF NOT EXISTS threshold INT NOT NULL DEFAULT 1",
+    "ALTER TABLE achievement_rules ADD COLUMN IF NOT EXISTS is_active BOOLEAN NOT NULL DEFAULT TRUE",
+    "ALTER TABLE achievement_rules ADD COLUMN IF NOT EXISTS sort_order INT NOT NULL DEFAULT 100",
+    "ALTER TABLE achievement_rules ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()",
+    "ALTER TABLE achievement_rules ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()",
+    "INSERT INTO achievement_rules(code, title, description, icon, metric_key, \"operator\", threshold, is_active, sort_order) VALUES ('first_points','Первый шаг','Ты получил первые баллы в курсе.','🌟','points','>=',1,TRUE,10) ON CONFLICT (code) DO NOTHING",
+    "INSERT INTO achievement_rules(code, title, description, icon, metric_key, \"operator\", threshold, is_active, sort_order) VALUES ('day_1_done','Первый день закрыт','Ты завершил первый день курса.','✅','done_days','>=',1,TRUE,20) ON CONFLICT (code) DO NOTHING",
+    "INSERT INTO achievement_rules(code, title, description, icon, metric_key, \"operator\", threshold, is_active, sort_order) VALUES ('streak_3','Серия 3 дня','Три дня подряд с завершением заданий.','🔥','streak','>=',3,TRUE,30) ON CONFLICT (code) DO NOTHING",
+    "INSERT INTO achievement_rules(code, title, description, icon, metric_key, \"operator\", threshold, is_active, sort_order) VALUES ('streak_7','Серия 7 дней','Неделя стабильной работы с курсом.','🏅','streak','>=',7,TRUE,40) ON CONFLICT (code) DO NOTHING",
+    "INSERT INTO achievement_rules(code, title, description, icon, metric_key, \"operator\", threshold, is_active, sort_order) VALUES ('habit_3_done','Ритм привычек','Отмечено минимум 3 выполнения привычек.','💪','habit_done','>=',3,TRUE,50) ON CONFLICT (code) DO NOTHING",
+    "INSERT INTO achievement_rules(code, title, description, icon, metric_key, \"operator\", threshold, is_active, sort_order) VALUES ('questionnaire_3','Рефлексия','Заполнено минимум 3 анкеты.','🧠','questionnaire_count','>=',3,TRUE,60) ON CONFLICT (code) DO NOTHING",
+    "INSERT INTO achievement_rules(code, title, description, icon, metric_key, \"operator\", threshold, is_active, sort_order) VALUES ('points_50','50 баллов','Ты набрал 50 баллов и выше.','🏆','points','>=',50,TRUE,70) ON CONFLICT (code) DO NOTHING",
     # Support tickets
-    "CREATE TABLE IF NOT EXISTS support_tickets (id SERIAL PRIMARY KEY, user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE, status TEXT NOT NULL DEFAULT 'open', question_text TEXT NOT NULL, admin_id BIGINT, admin_reply TEXT, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), closed_at TIMESTAMPTZ)",
+    "CREATE TABLE IF NOT EXISTS support_tickets (id SERIAL PRIMARY KEY, user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE, number INT NOT NULL, status TEXT NOT NULL DEFAULT 'open', question_text TEXT NOT NULL, admin_id BIGINT, admin_reply TEXT, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), closed_at TIMESTAMPTZ)",
+    "ALTER TABLE support_tickets ADD COLUMN IF NOT EXISTS number INT",
+    """
+    WITH ranked AS (
+      SELECT id, ROW_NUMBER() OVER (PARTITION BY user_id ORDER BY created_at, id) AS rn
+      FROM support_tickets
+    )
+    UPDATE support_tickets t
+       SET number = ranked.rn
+      FROM ranked
+     WHERE t.id = ranked.id
+       AND (t.number IS NULL OR t.number <= 0)
+    """,
+    "ALTER TABLE support_tickets ALTER COLUMN number SET NOT NULL",
     "CREATE INDEX IF NOT EXISTS idx_support_tickets_status_created ON support_tickets(status, created_at DESC)",
     "CREATE INDEX IF NOT EXISTS idx_support_tickets_user_created ON support_tickets(user_id, created_at DESC)",
+    "CREATE UNIQUE INDEX IF NOT EXISTS idx_support_tickets_user_number ON support_tickets(user_id, number)",
 
     # Habits
     "CREATE TABLE IF NOT EXISTS habits (id SERIAL PRIMARY KEY, user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE, title TEXT NOT NULL, remind_time TEXT NOT NULL, frequency TEXT NOT NULL DEFAULT 'daily', is_active BOOLEAN NOT NULL DEFAULT TRUE, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW())",

@@ -9,13 +9,25 @@ class SupportTicketsRepo:
 
     def create(self, user_id: int, question_text: str) -> dict | None:
         with self.db.cursor() as cur:
+            # Serialize numbering for a user to keep per-user ticket sequence stable.
+            cur.execute("SELECT id FROM users WHERE id=%s FOR UPDATE", (user_id,))
             cur.execute(
                 """
-                INSERT INTO support_tickets(user_id, status, question_text)
-                VALUES (%s, 'open', %s)
+                SELECT COALESCE(MAX(number), 0) + 1 AS next_no
+                FROM support_tickets
+                WHERE user_id=%s
+                """,
+                (user_id,),
+            )
+            row = cur.fetchone() or {}
+            next_no = int(row.get("next_no") or 1)
+            cur.execute(
+                """
+                INSERT INTO support_tickets(user_id, number, status, question_text)
+                VALUES (%s, %s, 'open', %s)
                 RETURNING *
                 """,
-                (user_id, question_text),
+                (user_id, next_no, question_text),
             )
             return cur.fetchone()
 
@@ -84,4 +96,3 @@ class SupportTicketsRepo:
                 (admin_id, ticket_id),
             )
             return cur.fetchone()
-

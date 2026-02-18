@@ -28,6 +28,13 @@ class AdminAnalyticsService:
             return 0
 
     @staticmethod
+    def _safe_float(v) -> float:
+        try:
+            return float(v or 0.0)
+        except Exception:
+            return 0.0
+
+    @staticmethod
     def _day_from_source_key(key: str | None) -> int | None:
         s = (key or "").strip()
         if not s.startswith("day:"):
@@ -186,4 +193,60 @@ class AdminAnalyticsService:
             f"• Personal reminders: created={personal_created}, sent={personal_sent}, pending={personal_pending}, cancelled={personal_cancelled}\n"
             f"• Habits: created={habits_created}, sent={habit_sent}, done={habit_done}, skipped={habit_skipped}\n"
             f"• Daily reminders sent: {daily_sent}"
+        )
+
+    def statistics_report(self, days: int) -> str:
+        """Business-facing short summary for marathon analytics."""
+        s = self.repo.summary(days) or {}
+        c = self.repo.content(days) or {}
+        q = self.repo.questionnaires(days) or {}
+
+        enrolled_total = self._safe_int(s.get("enrolled_total"))
+        active_users = self._safe_int(s.get("active_users"))
+
+        sent_rows = c.get("sent_rows") or []
+        lesson_rows = c.get("lesson_rows") or []
+        quest_rows = c.get("quest_rows") or []
+
+        total_lesson_sent = 0
+        total_quest_sent = 0
+        for row in sent_rows:
+            total_lesson_sent += self._safe_int(row.get("lesson_sent"))
+            total_quest_sent += self._safe_int(row.get("quest_sent"))
+
+        total_lesson_viewed = 0
+        for row in lesson_rows:
+            total_lesson_viewed += self._safe_int(row.get("viewed"))
+
+        total_quest_answered = 0
+        for row in quest_rows:
+            total_quest_answered += self._safe_int(row.get("answered"))
+
+        lesson_pct = 0.0 if total_lesson_sent <= 0 else (100.0 * total_lesson_viewed / total_lesson_sent)
+        quest_pct = 0.0 if total_quest_sent <= 0 else (100.0 * total_quest_answered / total_quest_sent)
+
+        if total_lesson_sent > 0 and total_quest_sent > 0:
+            avg_progress_pct = (lesson_pct + quest_pct) / 2.0
+        elif total_lesson_sent > 0:
+            avg_progress_pct = lesson_pct
+        elif total_quest_sent > 0:
+            avg_progress_pct = quest_pct
+        else:
+            avg_progress_pct = 0.0
+
+        total_sent = total_lesson_sent + total_quest_sent
+        total_done = total_lesson_viewed + total_quest_answered
+        completion_pct = 0.0 if total_sent <= 0 else (100.0 * total_done / total_sent)
+
+        q_summary = q.get("summary") or {}
+        responses_total = self._safe_int(q_summary.get("responses_total"))
+        avg_score = self._safe_float(q_summary.get("avg_score"))
+
+        active_tail = f" из {enrolled_total}" if enrolled_total > 0 else ""
+        return (
+            f"📊 Статистика марафона ({self._period_label(days)})\n\n"
+            f"• Активные пользователи: {active_users}{active_tail}\n"
+            f"• Средний прогресс: {avg_progress_pct:.1f}%\n"
+            f"• Процент выполнения: {completion_pct:.1f}%\n"
+            f"• Результаты анкет: ответов={responses_total}, средний score={avg_score:.2f}"
         )

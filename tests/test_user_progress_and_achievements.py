@@ -9,6 +9,92 @@ from core.achievement_service import AchievementService
 class DummyAchievementRepo:
     def __init__(self):
         self._granted = {}
+        self._rules = [
+            {
+                "id": 1,
+                "code": "first_points",
+                "title": "Первый шаг",
+                "description": "Ты получил первые баллы в курсе.",
+                "icon": "🌟",
+                "metric_key": "points",
+                "operator": ">=",
+                "threshold": 1,
+                "is_active": True,
+                "sort_order": 10,
+            },
+            {
+                "id": 2,
+                "code": "day_1_done",
+                "title": "Первый день закрыт",
+                "description": "Ты завершил первый день курса.",
+                "icon": "✅",
+                "metric_key": "done_days",
+                "operator": ">=",
+                "threshold": 1,
+                "is_active": True,
+                "sort_order": 20,
+            },
+            {
+                "id": 3,
+                "code": "streak_3",
+                "title": "Серия 3 дня",
+                "description": "Три дня подряд с завершением заданий.",
+                "icon": "🔥",
+                "metric_key": "streak",
+                "operator": ">=",
+                "threshold": 3,
+                "is_active": True,
+                "sort_order": 30,
+            },
+            {
+                "id": 4,
+                "code": "streak_7",
+                "title": "Серия 7 дней",
+                "description": "Неделя стабильной работы с курсом.",
+                "icon": "🏅",
+                "metric_key": "streak",
+                "operator": ">=",
+                "threshold": 7,
+                "is_active": True,
+                "sort_order": 40,
+            },
+            {
+                "id": 5,
+                "code": "habit_3_done",
+                "title": "Ритм привычек",
+                "description": "Отмечено минимум 3 выполнения привычек.",
+                "icon": "💪",
+                "metric_key": "habit_done",
+                "operator": ">=",
+                "threshold": 3,
+                "is_active": True,
+                "sort_order": 50,
+            },
+            {
+                "id": 6,
+                "code": "questionnaire_3",
+                "title": "Рефлексия",
+                "description": "Заполнено минимум 3 анкеты.",
+                "icon": "🧠",
+                "metric_key": "questionnaire_count",
+                "operator": ">=",
+                "threshold": 3,
+                "is_active": True,
+                "sort_order": 60,
+            },
+            {
+                "id": 7,
+                "code": "points_50",
+                "title": "50 баллов",
+                "description": "Ты набрал 50 баллов и выше.",
+                "icon": "🏆",
+                "metric_key": "points",
+                "operator": ">=",
+                "threshold": 50,
+                "is_active": True,
+                "sort_order": 70,
+            },
+        ]
 
     def grant(self, user_id, code, title, description, icon, payload=None):
         key = (int(user_id), str(code))
@@ -24,6 +110,15 @@ class DummyAchievementRepo:
         }
         self._granted[key] = row
         return row
+
+    def list_rules(self, active_only=True, limit=500):
+        rows = list(self._rules)
+        if active_only is True:
+            rows = [r for r in rows if bool(r.get("is_active"))]
+        elif active_only is False:
+            rows = [r for r in rows if not bool(r.get("is_active"))]
+        rows.sort(key=lambda r: (int(r.get("sort_order") or 0), int(r.get("id") or 0)))
+        return rows[: int(limit or 500)]
 
 
 class DummyPoints:
@@ -143,7 +238,33 @@ class ProgressAndAchievementTests(unittest.TestCase):
         self.assertIn("Ачивки: 1", txt)
         self.assertIn("Динамика по неделям:", txt)
 
+    def test_achievement_service_uses_db_rules(self):
+        svc = AchievementService.__new__(AchievementService)
+        svc.settings = SimpleNamespace(default_timezone="UTC")
+        repo = DummyAchievementRepo()
+        repo._rules = [
+            {
+                "id": 1,
+                "code": "points_40_custom",
+                "title": "40 баллов",
+                "description": "Кастомное правило из БД.",
+                "icon": "🎯",
+                "metric_key": "points",
+                "operator": ">=",
+                "threshold": 40,
+                "is_active": True,
+                "sort_order": 10,
+            }
+        ]
+        svc.repo = repo
+        svc.points = DummyPoints(total=42)
+        svc.progress = DummyProgress(done_days=0)
+        svc.user_progress = DummyMetrics()
+
+        granted = svc.evaluate(user_id=777)
+        self.assertEqual(len(granted), 1)
+        self.assertEqual(granted[0]["code"], "points_40_custom")
+
 
 if __name__ == "__main__":
     unittest.main()
-

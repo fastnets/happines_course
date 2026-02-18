@@ -121,6 +121,7 @@ def kb_admin_home() -> ReplyKeyboardMarkup:
         [
             [KeyboardButton(texts.ADMIN_LESSONS), KeyboardButton(texts.ADMIN_QUESTS)],
             [KeyboardButton(texts.ADMIN_QUESTIONNAIRES), KeyboardButton(texts.ADMIN_ANALYTICS)],
+            [KeyboardButton(texts.ADMIN_ACHIEVEMENTS), KeyboardButton(texts.ADMIN_TICKETS)],
             [KeyboardButton(texts.BTN_BACK)],
         ],
         resize_keyboard=True,
