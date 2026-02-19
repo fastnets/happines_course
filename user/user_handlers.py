@@ -1,4 +1,5 @@
 import asyncio
+import calendar
 import json
 import logging
 import re
@@ -63,6 +64,25 @@ HELP_FAQ_PREFIX = "help:faq:"
 HELP_FAQ_LIST = "help:faq:list"
 HELP_ESCALATE = "help:escalate"
 HELP_ESCALATE_TEXT = "📨 Направить вопрос администрации"
+CAL_DEMO_PREFIX = "caldemo:"
+CAL_DEMO_NAV_PREFIX = "caldemo:nav:"
+CAL_DEMO_PICK_PREFIX = "caldemo:pick:"
+CAL_DEMO_NOOP = "caldemo:noop"
+CAL_DEMO_CLOSE = "caldemo:close"
+RU_MONTH_NAMES = (
+    "январь",
+    "февраль",
+    "март",
+    "апрель",
+    "май",
+    "июнь",
+    "июль",
+    "август",
+    "сентябрь",
+    "октябрь",
+    "ноябрь",
+    "декабрь",
+)
 
 
 def _faq_items() -> list[tuple[str, str]]:
@@ -77,6 +97,55 @@ def _faq_items() -> list[tuple[str, str]]:
         except Exception:
             continue
     return out
+
+
+def _shift_month(year: int, month: int, delta: int) -> tuple[int, int]:
+    idx = year * 12 + (month - 1) + delta
+    y, m0 = divmod(idx, 12)
+    return y, m0 + 1
+
+
+def _calendar_demo_markup(year: int, month: int) -> InlineKeyboardMarkup:
+    prev_y, prev_m = _shift_month(year, month, -1)
+    next_y, next_m = _shift_month(year, month, 1)
+    title = f"{RU_MONTH_NAMES[month - 1].capitalize()} {year}"
+
+    rows: list[list[InlineKeyboardButton]] = [
+        [
+            InlineKeyboardButton("◀️", callback_data=f"{CAL_DEMO_NAV_PREFIX}{prev_y}:{prev_m}"),
+            InlineKeyboardButton(title, callback_data=CAL_DEMO_NOOP),
+            InlineKeyboardButton("▶️", callback_data=f"{CAL_DEMO_NAV_PREFIX}{next_y}:{next_m}"),
+        ],
+        [
+            InlineKeyboardButton("Пн", callback_data=CAL_DEMO_NOOP),
+            InlineKeyboardButton("Вт", callback_data=CAL_DEMO_NOOP),
+            InlineKeyboardButton("Ср", callback_data=CAL_DEMO_NOOP),
+            InlineKeyboardButton("Чт", callback_data=CAL_DEMO_NOOP),
+            InlineKeyboardButton("Пт", callback_data=CAL_DEMO_NOOP),
+            InlineKeyboardButton("Сб", callback_data=CAL_DEMO_NOOP),
+            InlineKeyboardButton("Вс", callback_data=CAL_DEMO_NOOP),
+        ],
+    ]
+    today = datetime.now(timezone.utc).date()
+    cal = calendar.Calendar(firstweekday=0)
+    for week in cal.monthdayscalendar(year, month):
+        row: list[InlineKeyboardButton] = []
+        for day in week:
+            if day == 0:
+                row.append(InlineKeyboardButton(" ", callback_data=CAL_DEMO_NOOP))
+                continue
+            label = str(day)
+            if today.year == year and today.month == month and today.day == day:
+                label = f"•{day}"
+            row.append(
+                InlineKeyboardButton(
+                    label,
+                    callback_data=f"{CAL_DEMO_PICK_PREFIX}{year:04d}-{month:02d}-{day:02d}",
+                )
+            )
+        rows.append(row)
+    rows.append([InlineKeyboardButton("❌ Закрыть", callback_data=CAL_DEMO_CLOSE)])
+    return InlineKeyboardMarkup(rows)
 
 
 def register_user_handlers(app, settings: Settings, services: dict):
@@ -343,6 +412,15 @@ def register_user_handlers(app, settings: Settings, services: dict):
             reply_markup=menus.kb_enroll_time(),
         )
 
+    async def calendar_demo_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        now = datetime.now(timezone.utc)
+        await update.effective_message.reply_text(
+            "🗓 Демо inline-календаря\n"
+            "Это тестовый экран: в БД ничего не записывается.\n\n"
+            "Выбери дату:",
+            reply_markup=_calendar_demo_markup(now.year, now.month),
+        )
+
     # ----------------------------
     # Callback handlers (consent / timezone / enroll time)
     # ----------------------------
@@ -597,6 +675,61 @@ def register_user_handlers(app, settings: Settings, services: dict):
             f"Если это не решило вопрос, нажми «{HELP_ESCALATE_TEXT}»."
         )
         await q.edit_message_text(msg, reply_markup=_faq_answer_markup())
+
+    async def calendar_demo_pick(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        q = update.callback_query
+        await q.answer()
+        data = (q.data or "").strip()
+
+        if data == CAL_DEMO_NOOP:
+            return
+
+        if data == CAL_DEMO_CLOSE:
+            await q.edit_message_text("Календарь закрыт.")
+            return
+
+        if data.startswith(CAL_DEMO_NAV_PREFIX):
+            payload = data.replace(CAL_DEMO_NAV_PREFIX, "", 1)
+            try:
+                y_s, m_s = payload.split(":", 1)
+                year = int(y_s)
+                month = int(m_s)
+                if month < 1 or month > 12:
+                    raise ValueError
+            except Exception:
+                await q.answer("Не смог открыть месяц.", show_alert=False)
+                return
+            await q.edit_message_text(
+                "🗓 Демо inline-календаря\nВыбери дату:",
+                reply_markup=_calendar_demo_markup(year, month),
+            )
+            return
+
+        if not data.startswith(CAL_DEMO_PICK_PREFIX):
+            return
+
+        raw_date = data.replace(CAL_DEMO_PICK_PREFIX, "", 1)
+        try:
+            selected = datetime.strptime(raw_date, "%Y-%m-%d")
+        except Exception:
+            await q.answer("Не смог распознать дату.", show_alert=False)
+            return
+
+        await q.edit_message_text(
+            f"✅ Выбрана дата: {selected.strftime('%d.%m.%Y')}\n"
+            "Это демо-календарь: запись в БД не выполняется.",
+            reply_markup=InlineKeyboardMarkup(
+                [
+                    [
+                        InlineKeyboardButton(
+                            "Открыть снова",
+                            callback_data=f"{CAL_DEMO_NAV_PREFIX}{selected.year}:{selected.month}",
+                        )
+                    ],
+                    [InlineKeyboardButton("❌ Закрыть", callback_data=CAL_DEMO_CLOSE)],
+                ]
+            ),
+        )
 
     # ----------------------------
     # Text input steps (name / time / tz / custom enroll time)
@@ -1710,11 +1843,13 @@ def register_user_handlers(app, settings: Settings, services: dict):
     # ----------------------------
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("enroll", enroll_cmd))
+    app.add_handler(CommandHandler("calendar_demo", calendar_demo_cmd))
 
     app.add_handler(CallbackQueryHandler(consent_pick, pattern=r"^consent:(yes|no)$"))
     app.add_handler(CallbackQueryHandler(tz_pick, pattern=r"^tz:.*"))
     app.add_handler(CallbackQueryHandler(enroll_time_pick, pattern=r"^" + re.escape(cb.ENROLL_TIME_PREFIX)))
     app.add_handler(CallbackQueryHandler(help_faq_pick, pattern=r"^help:(faq:\d+|faq:list|escalate)$"))
+    app.add_handler(CallbackQueryHandler(calendar_demo_pick, pattern=r"^" + re.escape(CAL_DEMO_PREFIX)))
 
     # Habits
     app.add_handler(CallbackQueryHandler(habit_freq_pick, pattern=r"^habit:freq:(daily|weekdays|weekends)$"))
