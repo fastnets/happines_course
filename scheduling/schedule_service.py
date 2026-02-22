@@ -386,7 +386,7 @@ class ScheduleService:
 
         return created
 
-    def schedule_questionnaire_broadcast(self, questionnaire_id: int, hhmm: str) -> int:
+    def schedule_questionnaire_broadcast(self, questionnaire_id: int, hhmm: str, optional: bool = False) -> int:
         """Schedule a questionnaire for each user at their local HH:MM."""
 
         hh, mm = [int(x) for x in hhmm.split(":")]
@@ -407,7 +407,12 @@ class ScheduleService:
             job_key = f"qcast:{questionnaire_id}:{target_local.date().isoformat()}:{hhmm}"
             if self.outbox.exists_job_for(int(uid), job_key):
                 continue
-            payload = {"kind": "questionnaire_broadcast", "job_key": job_key, "questionnaire_id": questionnaire_id}
+            payload = {
+                "kind": "questionnaire_broadcast",
+                "job_key": job_key,
+                "questionnaire_id": questionnaire_id,
+                "optional": bool(optional),
+            }
             self.outbox.create_job(int(uid), run_utc, payload)
             created += 1
         return created

@@ -62,9 +62,16 @@ def register_questionnaire_handlers(app, settings, services):
             await q.edit_message_reply_markup(reply_markup=None)
             return
         points = int(item["points"])
-        qsvc.start_comment_flow(q.from_user.id, qid, score, points)
+        is_optional = (item.get("qtype") == "broadcast_optional")
+        if is_optional:
+            qsvc.submit_score_only(q.from_user.id, qid, score, points)
+        else:
+            qsvc.start_comment_flow(q.from_user.id, qid, score, points)
         await q.edit_message_reply_markup(reply_markup=None)
-        await context.bot.send_message(chat_id=q.from_user.id, text=f"Спасибо! Оценка: {score}. +{points} баллов\n\nТеперь напиши коротко: почему так?")
+        if is_optional:
+            await context.bot.send_message(chat_id=q.from_user.id, text=f"Спасибо! Оценка: {score}. +{points} баллов")
+        else:
+            await context.bot.send_message(chat_id=q.from_user.id, text=f"Спасибо! Оценка: {score}. +{points} баллов\n\nТеперь напиши коротко: почему так?")
         await _notify_achievements(q.from_user.id, context)
 
     async def on_comment_text(update: Update, context: ContextTypes.DEFAULT_TYPE):

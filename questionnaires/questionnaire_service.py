@@ -32,6 +32,10 @@ class QuestionnaireService:
         self.points.add_points(user_id, "questionnaire_score", f"q:{qid}", points)
         self.state.set_state(user_id, STEP_WAIT_Q_COMMENT, {"questionnaire_id": qid, "score": score})
 
+    def submit_score_only(self, user_id: int, qid: int, score: int, points: int):
+        self.points.add_points(user_id, "questionnaire_score", f"q:{qid}", points)
+        self.r.add(qid, user_id, score, "")
+
     def save_comment(self, user_id: int, qid: int, score: int, comment: str):
         self.r.add(qid, user_id, score, comment)
         self.state.clear_state(user_id)

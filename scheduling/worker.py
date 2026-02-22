@@ -211,6 +211,7 @@ async def _process_outbox(context: ContextTypes.DEFAULT_TYPE, services: dict):
                 day_index = int(payload.get("day_index") or 0)
                 for_date_s = payload.get("for_date")
                 for_date = datetime.fromisoformat(for_date_s).date() if for_date_s else None
+                is_optional = bool(payload.get("optional"))
                 item = qsvc.get(qid)
                 if not item:
                     outbox.mark_sent(job_id)
@@ -220,7 +221,7 @@ async def _process_outbox(context: ContextTypes.DEFAULT_TYPE, services: dict):
                     text=f"📋 Анкета\n\n{item['question']}",
                     reply_markup=q_buttons(qid),
                 )
-                if day_index and for_date:
+                if (not is_optional) and day_index and for_date:
                     schedule.sent_jobs.mark_sent(user_id, "questionnaire", day_index, for_date)
                 outbox.mark_sent(job_id)
                 continue

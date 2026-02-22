@@ -1731,8 +1731,15 @@ def register_admin_handlers(app, settings: Settings, services: dict):
                 await update.effective_message.reply_text("Некорректное время."); raise ApplicationHandlerStop
             hhmm = f"{hh_i:02d}:{mm_i:02d}"
 
-            qid = qsvc.create(payload["question"], "manual", bool(payload["use_in_charts"]), int(payload["points"]), update.effective_user.id)
-            created = schedule.schedule_questionnaire_broadcast(qid, hhmm)
+            # Admin "random broadcast" questionnaire is optional for users.
+            qid = qsvc.create(
+                payload["question"],
+                "broadcast_optional",
+                bool(payload["use_in_charts"]),
+                int(payload["points"]),
+                update.effective_user.id,
+            )
+            created = schedule.schedule_questionnaire_broadcast(qid, hhmm, optional=True)
             state.clear_state(update.effective_user.id)
             await _show_q_menu(update)
             await update.effective_message.reply_text(f"✅ Запланировано. Анкета ID={qid}. Получателей: {created}")

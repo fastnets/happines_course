@@ -39,7 +39,7 @@ class ScheduleServiceTests(unittest.TestCase):
         svc.outbox = DummyOutbox(existing_users={2})
         svc._user_tz = lambda user_id: ZoneInfo("UTC")
 
-        created = svc.schedule_questionnaire_broadcast(questionnaire_id=77, hhmm="09:30")
+        created = svc.schedule_questionnaire_broadcast(questionnaire_id=77, hhmm="09:30", optional=True)
 
         self.assertEqual(created, 2)
         self.assertEqual(len(svc.outbox.created), 2)
@@ -52,6 +52,7 @@ class ScheduleServiceTests(unittest.TestCase):
             self.assertIn("T", run_at_iso)
             self.assertEqual(payload["kind"], "questionnaire_broadcast")
             self.assertEqual(payload["questionnaire_id"], 77)
+            self.assertTrue(payload["optional"])
             self.assertTrue(payload["job_key"].startswith("qcast:77:"))
 
 
