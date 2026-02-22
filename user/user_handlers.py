@@ -1220,20 +1220,35 @@ def register_user_handlers(app, settings: Settings, services: dict):
 
             tid = int(ticket.get("id") or 0)
             tnum = int(ticket.get("number") or tid or 0)
-            await update.effective_message.reply_text(
-                f"✅ Принято. Заявка №{tnum} передана администратору.\n"
-                "Когда будет ответ, я пришлю его сюда.",
-                reply_markup=menus.kb_main(_is_admin(uid)),
-            )
+            is_author_admin = _is_admin(uid)
+            recipient_ids = [int(aid) for aid in _admin_ids() if int(aid) != int(uid)]
+
+            if recipient_ids:
+                await update.effective_message.reply_text(
+                    f"✅ Принято. Заявка №{tnum} передана администратору.\n"
+                    "Когда будет ответ, я пришлю его сюда.",
+                    reply_markup=menus.kb_main(is_author_admin),
+                )
+            elif is_author_admin:
+                await update.effective_message.reply_text(
+                    f"✅ Принято. Заявка №{tnum} сохранена.\n"
+                    "ℹ️ Других администраторов в системе нет, поэтому уведомление не отправлено.\n"
+                    "Тикет доступен в разделе «🛠 Админка -> 🆘 Тикеты».",
+                    reply_markup=menus.kb_main(is_author_admin),
+                )
+            else:
+                await update.effective_message.reply_text(
+                    f"✅ Принято. Заявка №{tnum} сохранена.\n"
+                    "ℹ️ Сейчас нет доступных администраторов для мгновенного уведомления.",
+                    reply_markup=menus.kb_main(is_author_admin),
+                )
 
             admin_text = _ticket_for_admin(ticket, u)
-            for admin_id in _admin_ids():
-                if int(admin_id) == int(uid):
-                    continue
+            for admin_id in recipient_ids:
                 try:
                     await context.bot.send_message(chat_id=admin_id, text=admin_text)
                 except Exception:
-                    pass
+                    log.exception("Failed to send support ticket notification to admin_id=%s", admin_id)
             raise ApplicationHandlerStop
 
     # ----------------------------

@@ -25,6 +25,23 @@ class UsersRepo:
             cur.execute("SELECT * FROM users WHERE id=%s", (tg_id,))
             return cur.fetchone()
 
+    def get_by_username(self, username: str):
+        uname = (username or "").strip().lstrip("@")
+        if not uname:
+            return None
+        with self.db.cursor() as cur:
+            cur.execute(
+                """
+                SELECT *
+                FROM users
+                WHERE lower(username) = lower(%s)
+                ORDER BY created_at DESC
+                LIMIT 1
+                """,
+                (uname,),
+            )
+            return cur.fetchone()
+
     def get_timezone(self, tg_id: int) -> str | None:
         with self.db.cursor() as cur:
             cur.execute("SELECT timezone FROM users WHERE id=%s", (tg_id,))

@@ -58,6 +58,7 @@ ADMIN_QUESTIONNAIRES = "📋 Анкеты"
 ADMIN_ANALYTICS = "📈 Аналитика"
 ADMIN_TICKETS = "🆘 Тикеты"
 ADMIN_ACHIEVEMENTS = "🏆 Ачивки"
+ADMIN_ADMINS = "👥 Админы"
 
 CRUD_LIST = "📋 Список"
 CRUD_CREATE = "➕ Создать"
@@ -78,6 +79,7 @@ ADMIN_TEXTS = {
     ADMIN_ANALYTICS,
     ADMIN_TICKETS,
     ADMIN_ACHIEVEMENTS,
+    ADMIN_ADMINS,
     CRUD_LIST,
     CRUD_CREATE,
     CRUD_EDIT,

@@ -24,6 +24,7 @@ CREATE TABLE IF NOT EXISTS user_state (
 -- Admins allowed to access the admin panel.
 CREATE TABLE IF NOT EXISTS admins (
   user_id BIGINT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+  role TEXT NOT NULL DEFAULT 'admin',
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
@@ -257,7 +258,8 @@ MIGRATIONS_SQL = [
     "ALTER TABLE quests ADD COLUMN IF NOT EXISTS photo_file_id TEXT",
     "ALTER TABLE outbox_jobs ADD COLUMN IF NOT EXISTS attempts INT NOT NULL DEFAULT 0",
     "ALTER TABLE outbox_jobs ADD COLUMN IF NOT EXISTS last_error TEXT",
-    "CREATE TABLE IF NOT EXISTS admins (user_id BIGINT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW())",
+    "CREATE TABLE IF NOT EXISTS admins (user_id BIGINT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE, role TEXT NOT NULL DEFAULT 'admin', created_at TIMESTAMPTZ NOT NULL DEFAULT NOW())",
+    "ALTER TABLE admins ADD COLUMN IF NOT EXISTS role TEXT NOT NULL DEFAULT 'admin'",
     "CREATE TABLE IF NOT EXISTS deliveries (user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE, day_index INT NOT NULL, item_type TEXT NOT NULL, sent_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), PRIMARY KEY (user_id, day_index, item_type))",
     "CREATE TABLE IF NOT EXISTS sent_jobs (user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE, content_type TEXT NOT NULL, day_index INT NOT NULL, for_date DATE NOT NULL, sent_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), PRIMARY KEY (user_id, content_type, day_index, for_date))",
 

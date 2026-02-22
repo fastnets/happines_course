@@ -9,6 +9,13 @@ def _csv_ints(v: str) -> list[int]:
         return []
     return [int(x.strip()) for x in v.split(",") if x.strip()]
 
+
+def _opt_int(v: str | None) -> int | None:
+    s = (v or "").strip()
+    if not s:
+        return None
+    return int(s)
+
 @dataclass(frozen=True)
 class Settings:
     bot_token: str
@@ -17,6 +24,7 @@ class Settings:
     db_name: str
     db_user: str
     db_password: str
+    owner_tg_id: int | None
     admin_tg_ids: list[int]
     default_timezone: str
     delivery_grace_minutes: int
@@ -38,6 +46,7 @@ def get_settings() -> Settings:
         db_name=os.getenv("DB_NAME", "happiness"),
         db_user=os.getenv("DB_USER", "postgres"),
         db_password=os.getenv("DB_PASSWORD", "postgres"),
+        owner_tg_id=_opt_int(os.getenv("OWNER_TG_ID", "")),
         admin_tg_ids=_csv_ints(os.getenv("ADMIN_TG_IDS", "")),
         default_timezone=os.getenv("DEFAULT_TIMEZONE", "Europe/Moscow"),
         delivery_grace_minutes=int(os.getenv("DELIVERY_GRACE_MINUTES", "15")),

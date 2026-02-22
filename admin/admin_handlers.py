@@ -21,6 +21,10 @@ BTN_CREATE = "➕ Создать"
 BTN_EDIT = "✏️ Редактировать"
 BTN_DELETE = "🗑 Удалить"
 BTN_RANDOM_Q = "🎲 Рандомная анкета всем"
+BTN_ADM_ADD = "➕ Добавить admin"
+BTN_ADM_PROMOTE = "👑 Выдать owner"
+BTN_ADM_DEMOTE = "🛠 Понизить до admin"
+BTN_ADM_REMOVE = "🗑 Удалить из админов"
 
 BTN_YES = "Да"
 BTN_NO = "Нет"
@@ -55,15 +59,16 @@ def kb_yes_no():
     return kb([[KeyboardButton(BTN_YES), KeyboardButton(BTN_NO)], [KeyboardButton(texts.BTN_BACK)]])
 
 
-def kb_admin_home():
-    return kb(
-        [
-            [KeyboardButton(texts.ADMIN_LESSONS), KeyboardButton(texts.ADMIN_QUESTS)],
-            [KeyboardButton(texts.ADMIN_QUESTIONNAIRES), KeyboardButton(texts.ADMIN_ANALYTICS)],
-            [KeyboardButton(texts.ADMIN_ACHIEVEMENTS), KeyboardButton(texts.ADMIN_TICKETS)],
-            [KeyboardButton(texts.BTN_BACK)],
-        ]
-    )
+def kb_admin_home(is_owner: bool = False):
+    rows = [
+        [KeyboardButton(texts.ADMIN_LESSONS), KeyboardButton(texts.ADMIN_QUESTS)],
+        [KeyboardButton(texts.ADMIN_QUESTIONNAIRES), KeyboardButton(texts.ADMIN_ANALYTICS)],
+        [KeyboardButton(texts.ADMIN_ACHIEVEMENTS), KeyboardButton(texts.ADMIN_TICKETS)],
+    ]
+    if is_owner:
+        rows.append([KeyboardButton(texts.ADMIN_ADMINS)])
+    rows.append([KeyboardButton(texts.BTN_BACK)])
+    return kb(rows)
 
 def kb_admin_actions(include_random: bool = False):
     rows = [
@@ -97,11 +102,23 @@ def kb_admin_tickets():
     )
 
 
+def kb_admin_admins():
+    return kb(
+        [
+            [KeyboardButton(BTN_LIST), KeyboardButton(BTN_ADM_ADD)],
+            [KeyboardButton(BTN_ADM_PROMOTE), KeyboardButton(BTN_ADM_DEMOTE)],
+            [KeyboardButton(BTN_ADM_REMOVE)],
+            [KeyboardButton(texts.BTN_BACK)],
+        ]
+    )
+
+
 def register_admin_handlers(app, settings: Settings, services: dict):
     admin_svc = services.get("admin")
     admin_analytics = services.get("admin_analytics")
     support_svc = services.get("support")
     achievement_svc = services.get("achievement")
+    user_svc = services["user"]
 
     def _is_admin(update: Update) -> bool:
         try:
@@ -110,7 +127,14 @@ def register_admin_handlers(app, settings: Settings, services: dict):
         except Exception:
             return False
 
-    state = services["user"].state
+    def _is_owner(update: Update) -> bool:
+        try:
+            uid = update.effective_user.id if update.effective_user else None
+            return bool(uid and admin_svc and hasattr(admin_svc, "is_owner") and admin_svc.is_owner(uid))
+        except Exception:
+            return False
+
+    state = user_svc.state
     qsvc = services["questionnaire"]
     schedule = services["schedule"]
     lesson_repo = schedule.lesson
@@ -135,7 +159,7 @@ def register_admin_handlers(app, settings: Settings, services: dict):
     async def _show_admin_home(update: Update):
         uid = update.effective_user.id
         _set_menu(uid, "home")
-        await update.effective_message.reply_text("🛠 Админка", reply_markup=kb_admin_home())
+        await update.effective_message.reply_text("🛠 Админка", reply_markup=kb_admin_home(_is_owner(update)))
 
     async def _show_lessons_menu(update: Update):
         uid = update.effective_user.id
@@ -156,6 +180,11 @@ def register_admin_handlers(app, settings: Settings, services: dict):
         uid = update.effective_user.id
         _set_menu(uid, "achievements")
         await update.effective_message.reply_text("🏆 Ачивки", reply_markup=kb_admin_actions(False))
+
+    async def _show_admins_menu(update: Update):
+        uid = update.effective_user.id
+        _set_menu(uid, "admins")
+        await update.effective_message.reply_text("👥 Управление админами", reply_markup=kb_admin_admins())
 
     ACH_METRIC_OPTIONS = [
         ("Баллы", "points"),
@@ -488,6 +517,82 @@ def register_admin_handlers(app, settings: Settings, services: dict):
         await _show_admin_home(update)
         raise ApplicationHandlerStop
 
+    def _parse_target_uid(context: ContextTypes.DEFAULT_TYPE) -> int | None:
+        args = list(getattr(context, "args", []) or [])
+        if len(args) != 1:
+            return None
+        raw = str(args[0]).strip()
+        if not re.match(r"^\d+$", raw):
+            return None
+        uid = int(raw)
+        return uid if uid > 0 else None
+
+    def _resolve_user_ref(raw: str) -> tuple[int | None, str | None]:
+        val = (raw or "").strip()
+        if not val:
+            return None, "Укажи @username или user_id."
+        if val.startswith("@"):
+            uname = val[1:].strip()
+            if not uname:
+                return None, "Некорректный @username."
+            row = user_svc.users.get_by_username(uname)
+            if not row:
+                return None, "Пользователь с таким @username не найден. Пусть сначала запустит бота /start."
+            return int(row.get("id") or 0), None
+        if re.match(r"^\d+$", val):
+            uid = int(val)
+            if uid <= 0:
+                return None, "Некорректный user_id."
+            row = user_svc.users.get_user(uid)
+            if not row:
+                return None, "Такого user_id нет в базе. Пусть пользователь сначала запустит бота /start."
+            return uid, None
+        return None, "Формат: @username или user_id."
+
+    async def _send_admins_list(update: Update, *, reply_markup=None):
+        if not admin_svc or not hasattr(admin_svc, "list_admins"):
+            await update.effective_message.reply_text("⚠️ Сервис админов недоступен.", reply_markup=reply_markup)
+            return
+        rows = admin_svc.list_admins() or []
+        if not rows:
+            await update.effective_message.reply_text("👥 Админы: список пуст.", reply_markup=reply_markup)
+            return
+        lines = ["👥 Админы:"]
+        for r in rows:
+            uid = int(r.get("user_id") or 0)
+            role = str(r.get("role") or "admin").strip().lower()
+            mark = "👑 owner" if role == "owner" else "🛠 admin"
+            lines.append(f"• {uid} — {mark}")
+        await update.effective_message.reply_text("\n".join(lines), reply_markup=reply_markup)
+
+    async def cmd_admins(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if not _is_owner(update):
+            await update.effective_message.reply_text("⛔️ Команда доступна только owner.")
+            return
+        await _send_admins_list(update)
+
+    async def cmd_admin_add(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if not _is_owner(update):
+            await update.effective_message.reply_text("⛔️ Команда доступна только owner.")
+            return
+        target_uid = _parse_target_uid(context)
+        if not target_uid:
+            await update.effective_message.reply_text("Формат: /admin_add <user_id>")
+            return
+        ok, msg = admin_svc.grant_admin(update.effective_user.id, target_uid)
+        await update.effective_message.reply_text(("✅ " if ok else "⚠️ ") + msg)
+
+    async def cmd_admin_remove(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if not _is_owner(update):
+            await update.effective_message.reply_text("⛔️ Команда доступна только owner.")
+            return
+        target_uid = _parse_target_uid(context)
+        if not target_uid:
+            await update.effective_message.reply_text("Формат: /admin_remove <user_id>")
+            return
+        ok, msg = admin_svc.remove_admin(update.effective_user.id, target_uid)
+        await update.effective_message.reply_text(("✅ " if ok else "⚠️ ") + msg)
+
     async def _reply_ticket_and_notify(
         update: Update,
         context: ContextTypes.DEFAULT_TYPE,
@@ -716,7 +821,7 @@ def register_admin_handlers(app, settings: Settings, services: dict):
         if text == texts.BTN_BACK:
             screen0 = (screen or "home").lower()
 
-            if screen0 in ("lessons", "quests", "questionnaires", "analytics", "achievements", "tickets"):
+            if screen0 in ("lessons", "quests", "questionnaires", "analytics", "achievements", "tickets", "admins"):
                 await _show_admin_home(update)
                 raise ApplicationHandlerStop
 
@@ -738,6 +843,11 @@ def register_admin_handlers(app, settings: Settings, services: dict):
                 await _show_achievements_menu(update); raise ApplicationHandlerStop
             if text == texts.ADMIN_TICKETS:
                 await _show_tickets_menu(update, "open", 20); raise ApplicationHandlerStop
+            if text == texts.ADMIN_ADMINS:
+                if not _is_owner(update):
+                    await update.effective_message.reply_text("⛔️ Раздел доступен только owner.")
+                    raise ApplicationHandlerStop
+                await _show_admins_menu(update); raise ApplicationHandlerStop
 
         if screen == "analytics":
             payload0 = payload or {}
@@ -823,6 +933,31 @@ def register_admin_handlers(app, settings: Settings, services: dict):
                 await update.effective_message.reply_text("Введи ID тикета, который нужно закрыть.")
                 raise ApplicationHandlerStop
 
+        if screen == "admins":
+            if not _is_owner(update):
+                await update.effective_message.reply_text("⛔️ Раздел доступен только owner.")
+                await _show_admin_home(update)
+                raise ApplicationHandlerStop
+            if text == BTN_LIST:
+                await _send_admins_list(update, reply_markup=kb_admin_admins())
+                raise ApplicationHandlerStop
+            if text == BTN_ADM_ADD:
+                state.set_state(uid, ADMIN_WIZARD_STEP, {"mode": "adm_add_target"})
+                await update.effective_message.reply_text("Введи @username или user_id для добавления в admin.")
+                raise ApplicationHandlerStop
+            if text == BTN_ADM_PROMOTE:
+                state.set_state(uid, ADMIN_WIZARD_STEP, {"mode": "adm_promote_target"})
+                await update.effective_message.reply_text("Введи @username или user_id для выдачи роли owner.")
+                raise ApplicationHandlerStop
+            if text == BTN_ADM_DEMOTE:
+                state.set_state(uid, ADMIN_WIZARD_STEP, {"mode": "adm_demote_target"})
+                await update.effective_message.reply_text("Введи @username или user_id для понижения до admin.")
+                raise ApplicationHandlerStop
+            if text == BTN_ADM_REMOVE:
+                state.set_state(uid, ADMIN_WIZARD_STEP, {"mode": "adm_remove_target"})
+                await update.effective_message.reply_text("Введи @username или user_id для удаления из админов.")
+                raise ApplicationHandlerStop
+
         # Stop further handlers while admin menu is active.
         raise ApplicationHandlerStop
 
@@ -876,6 +1011,13 @@ def register_admin_handlers(app, settings: Settings, services: dict):
             state.clear_state(uid)
             await _show_tickets_menu(update, "open", 20)
             raise ApplicationHandlerStop
+        if text == texts.ADMIN_ADMINS:
+            if not _is_owner(update):
+                await update.effective_message.reply_text("⛔️ Раздел доступен только owner.")
+                raise ApplicationHandlerStop
+            state.clear_state(uid)
+            await _show_admins_menu(update)
+            raise ApplicationHandlerStop
 
         # Allow leaving wizard with Back
         if text == texts.BTN_BACK:
@@ -902,6 +1044,8 @@ def register_admin_handlers(app, settings: Settings, services: dict):
                 back_mode = _safe_tickets_mode(payload0.get("return_mode"))
                 back_limit = _safe_tickets_limit(payload0.get("return_limit"))
                 await _show_tickets_menu(update, back_mode, back_limit)
+            elif mode0.startswith("adm_"):
+                await _show_admins_menu(update)
             else:
                 await _show_admin_home(update)
             raise ApplicationHandlerStop
@@ -972,6 +1116,29 @@ def register_admin_handlers(app, settings: Settings, services: dict):
             if text == BTN_T_CLOSE:
                 state.set_state(uid, ADMIN_WIZARD_STEP, {"mode": "t_close_id", "return_mode": return_mode, "return_limit": return_limit})
                 await update.effective_message.reply_text("Введи ID тикета, который нужно закрыть.")
+                raise ApplicationHandlerStop
+
+        if mode_s.startswith("adm_"):
+            if text == BTN_LIST:
+                state.clear_state(uid)
+                await _show_admins_menu(update)
+                await _send_admins_list(update, reply_markup=kb_admin_admins())
+                raise ApplicationHandlerStop
+            if text == BTN_ADM_ADD:
+                state.set_state(uid, ADMIN_WIZARD_STEP, {"mode": "adm_add_target"})
+                await update.effective_message.reply_text("Введи @username или user_id для добавления в admin.")
+                raise ApplicationHandlerStop
+            if text == BTN_ADM_PROMOTE:
+                state.set_state(uid, ADMIN_WIZARD_STEP, {"mode": "adm_promote_target"})
+                await update.effective_message.reply_text("Введи @username или user_id для выдачи роли owner.")
+                raise ApplicationHandlerStop
+            if text == BTN_ADM_DEMOTE:
+                state.set_state(uid, ADMIN_WIZARD_STEP, {"mode": "adm_demote_target"})
+                await update.effective_message.reply_text("Введи @username или user_id для понижения до admin.")
+                raise ApplicationHandlerStop
+            if text == BTN_ADM_REMOVE:
+                state.set_state(uid, ADMIN_WIZARD_STEP, {"mode": "adm_remove_target"})
+                await update.effective_message.reply_text("Введи @username или user_id для удаления из админов.")
                 raise ApplicationHandlerStop
 
         # --- Lessons wizard ---
@@ -1571,12 +1738,47 @@ def register_admin_handlers(app, settings: Settings, services: dict):
             await update.effective_message.reply_text(f"✅ Запланировано. Анкета ID={qid}. Получателей: {created}")
             return
 
+        # --- Admins owner wizard ---
+        if mode in ("adm_add_target", "adm_remove_target", "adm_promote_target", "adm_demote_target"):
+            if not _is_owner(update):
+                state.clear_state(uid)
+                await _show_admin_home(update)
+                await update.effective_message.reply_text("⛔️ Раздел доступен только owner.")
+                return
+            target_uid, err = _resolve_user_ref(text)
+            if err:
+                await update.effective_message.reply_text(err)
+                raise ApplicationHandlerStop
+            if mode == "adm_add_target":
+                ok, msg = admin_svc.grant_admin(uid, int(target_uid))
+                state.clear_state(uid)
+                await _show_admins_menu(update)
+                await update.effective_message.reply_text(("✅ " if ok else "⚠️ ") + msg, reply_markup=kb_admin_admins())
+                return
+            if mode == "adm_remove_target":
+                ok, msg = admin_svc.remove_admin(uid, int(target_uid))
+                state.clear_state(uid)
+                await _show_admins_menu(update)
+                await update.effective_message.reply_text(("✅ " if ok else "⚠️ ") + msg, reply_markup=kb_admin_admins())
+                return
+            if mode == "adm_promote_target":
+                ok, msg = admin_svc.grant_owner(uid, int(target_uid))
+            else:
+                ok, msg = admin_svc.demote_owner_to_admin(uid, int(target_uid))
+            state.clear_state(uid)
+            await _show_admins_menu(update)
+            await update.effective_message.reply_text(("✅ " if ok else "⚠️ ") + msg, reply_markup=kb_admin_admins())
+            return
+
         raise ApplicationHandlerStop
 
     # ----------------------------
     # Register handlers
     # ----------------------------
     app.add_handler(CommandHandler("admin", cmd_admin))
+    app.add_handler(CommandHandler("admins", cmd_admins))
+    app.add_handler(CommandHandler("admin_add", cmd_admin_add))
+    app.add_handler(CommandHandler("admin_remove", cmd_admin_remove))
     app.add_handler(MessageHandler(filters.Regex(rf"^{re.escape(texts.MENU_ADMIN)}$"), open_admin_from_menu))
     # Admin menu navigation (reply buttons)
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, admin_menu_pick), group=-11)
