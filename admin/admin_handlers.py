@@ -37,7 +37,6 @@ BTN_A_STATS = "📊 Статистика"
 
 # Tickets submenu
 BTN_T_OPEN = "🟡 Open"
-BTN_T_ALL = "📚 Все"
 BTN_T_VIEW = "🔎 Открыть по ID"
 BTN_T_REPLY = "💬 Ответить"
 BTN_T_CLOSE = "✅ Закрыть"
@@ -94,7 +93,7 @@ def kb_admin_analytics():
 def kb_admin_tickets():
     return kb(
         [
-            [KeyboardButton(BTN_T_OPEN), KeyboardButton(BTN_T_ALL)],
+            [KeyboardButton(BTN_T_OPEN)],
             [KeyboardButton(BTN_T_VIEW), KeyboardButton(BTN_T_REPLY)],
             [KeyboardButton(BTN_T_CLOSE)],
             [KeyboardButton(texts.BTN_BACK)],
@@ -906,8 +905,6 @@ def register_admin_handlers(app, settings: Settings, services: dict):
 
             if text == BTN_T_OPEN:
                 await _show_tickets_menu(update, "open", limit); raise ApplicationHandlerStop
-            if text == BTN_T_ALL:
-                await _show_tickets_menu(update, "all", limit); raise ApplicationHandlerStop
             if text == BTN_T_VIEW:
                 state.set_state(
                     uid,
@@ -1103,8 +1100,6 @@ def register_admin_handlers(app, settings: Settings, services: dict):
             return_limit = _safe_tickets_limit(payload.get("return_limit"))
             if text == BTN_T_OPEN:
                 state.clear_state(uid); await _show_tickets_menu(update, "open", return_limit); raise ApplicationHandlerStop
-            if text == BTN_T_ALL:
-                state.clear_state(uid); await _show_tickets_menu(update, "all", return_limit); raise ApplicationHandlerStop
             if text == BTN_T_VIEW:
                 state.set_state(uid, ADMIN_WIZARD_STEP, {"mode": "t_view_id", "return_mode": return_mode, "return_limit": return_limit})
                 await update.effective_message.reply_text("Введи ID тикета (число).")

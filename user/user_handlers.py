@@ -63,6 +63,8 @@ HELP_FAQ_PREFIX = "help:faq:"
 HELP_FAQ_LIST = "help:faq:list"
 HELP_ESCALATE = "help:escalate"
 HELP_ESCALATE_TEXT = "📨 Направить вопрос администрации"
+ADMIN_TICKET_OPEN_PREFIX = "admin_ticket:open:"
+ADMIN_TICKET_REPLY_PREFIX = "admin_ticket:reply:"
 
 
 def _faq_items() -> list[tuple[str, str]]:
@@ -207,6 +209,16 @@ def register_user_handlers(app, settings: Settings, services: dict):
             f"Сообщение:\n{text}\n\n"
             "Взаимодействуйте через админ-панель:\n"
             "🛠 Админка -> 🆘 Тикеты"
+        )
+
+    def _ticket_admin_markup(ticket: dict) -> InlineKeyboardMarkup:
+        tid = int(ticket.get("id") or 0)
+        tnum = int(ticket.get("number") or tid or 0)
+        return InlineKeyboardMarkup(
+            [
+                [InlineKeyboardButton("🛠 Открыть тикеты", callback_data=f"{ADMIN_TICKET_OPEN_PREFIX}{tid}")],
+                [InlineKeyboardButton(f"💬 Ответить по №{tnum}", callback_data=f"{ADMIN_TICKET_REPLY_PREFIX}{tid}")],
+            ]
         )
 
     def _faq_list_markup() -> InlineKeyboardMarkup:
@@ -597,6 +609,62 @@ def register_user_handlers(app, settings: Settings, services: dict):
             f"Если это не решило вопрос, нажми «{HELP_ESCALATE_TEXT}»."
         )
         await q.edit_message_text(msg, reply_markup=_faq_answer_markup())
+
+    async def admin_ticket_quick_pick(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        q = update.callback_query
+        data = (q.data or "").strip()
+        uid = q.from_user.id
+        if not _is_admin(uid):
+            await q.answer("Только для админов.", show_alert=True)
+            return
+        await q.answer()
+
+        if data.startswith(ADMIN_TICKET_OPEN_PREFIX):
+            raw = data.replace(ADMIN_TICKET_OPEN_PREFIX, "", 1)
+            tid = int(raw) if raw.isdigit() else 0
+            user_svc.set_step(uid, "admin_menu", {"screen": "tickets", "mode": "open", "limit": 20})
+            await q.message.reply_text(
+                "🆘 Быстрый переход к тикетам.\n"
+                "Открой: 🛠 Админка -> 🆘 Тикеты.\n"
+                f"ID заявки: {tid if tid > 0 else '-'}",
+                reply_markup=menus.kb_main(True),
+            )
+            return
+
+        if data.startswith(ADMIN_TICKET_REPLY_PREFIX):
+            raw = data.replace(ADMIN_TICKET_REPLY_PREFIX, "", 1)
+            if not raw.isdigit():
+                await q.message.reply_text("Не смог распознать ID тикета.")
+                return
+            tid = int(raw)
+            if not support_svc:
+                await q.message.reply_text("⚠️ Сервис поддержки не подключён.")
+                return
+            row = support_svc.get(tid)
+            if not row:
+                await q.message.reply_text("Тикет не найден.")
+                return
+            status = str(row.get("status") or "").strip().lower()
+            if status != "open":
+                await q.message.reply_text("Тикет уже закрыт.")
+                return
+            tnum = int(row.get("number") or tid or 0)
+            user_svc.set_step(
+                uid,
+                "admin_wizard",
+                {
+                    "mode": "t_reply_text",
+                    "ticket_id": tid,
+                    "ticket_number": tnum,
+                    "return_mode": "open",
+                    "return_limit": 20,
+                },
+            )
+            await q.message.reply_text(
+                f"💬 Быстрый ответ по заявке №{tnum} (id={tid}).\n"
+                "Введи текст ответа одним сообщением."
+            )
+            return
 
     # ----------------------------
     # Text input steps (name / time / tz / custom enroll time)
@@ -1246,7 +1314,11 @@ def register_user_handlers(app, settings: Settings, services: dict):
             admin_text = _ticket_for_admin(ticket, u)
             for admin_id in recipient_ids:
                 try:
-                    await context.bot.send_message(chat_id=admin_id, text=admin_text)
+                    await context.bot.send_message(
+                        chat_id=admin_id,
+                        text=admin_text,
+                        reply_markup=_ticket_admin_markup(ticket),
+                    )
                 except Exception:
                     log.exception("Failed to send support ticket notification to admin_id=%s", admin_id)
             raise ApplicationHandlerStop
@@ -1730,6 +1802,7 @@ def register_user_handlers(app, settings: Settings, services: dict):
     app.add_handler(CallbackQueryHandler(tz_pick, pattern=r"^tz:.*"))
     app.add_handler(CallbackQueryHandler(enroll_time_pick, pattern=r"^" + re.escape(cb.ENROLL_TIME_PREFIX)))
     app.add_handler(CallbackQueryHandler(help_faq_pick, pattern=r"^help:(faq:\d+|faq:list|escalate)$"))
+    app.add_handler(CallbackQueryHandler(admin_ticket_quick_pick, pattern=r"^admin_ticket:(open|reply):\d+$"))
 
     # Habits
     app.add_handler(CallbackQueryHandler(habit_freq_pick, pattern=r"^habit:freq:(daily|weekdays|weekends)$"))
