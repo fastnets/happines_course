@@ -695,15 +695,18 @@ def register_admin_handlers(app, settings: Settings, services: dict):
         if not items:
             await update.effective_message.reply_text("📋 Анкеты: пока пусто.", reply_markup=kb_admin_actions(True))
             return
-        lines = ["📋 *Анкеты* (id → баллы, диаграммы)"]
+        lines = ["📋 *Анкеты* (id → день, тип, баллы, диаграммы)"]
         for it in items:
             qid = it["id"]
+            qtype = str(it.get("qtype") or "manual")
+            day = it.get("day_index")
+            day_label = str(int(day)) if day is not None else "—"
             pts = int(it.get("points") or 0)
             charts = "да" if it.get("use_in_charts") else "нет"
             q = it.get("question") or ""
             if len(q) > 70:
                 q = q[:67] + "..."
-            lines.append(f"• *{qid}* — +{pts} — charts={charts} — {q}")
+            lines.append(f"• *{qid}* — day={day_label} — {qtype} — +{pts} — charts={charts} — {q}")
         await update.effective_message.reply_text(
             "\n".join(lines), parse_mode="Markdown", reply_markup=kb_admin_actions(True)
         )
@@ -1228,7 +1231,19 @@ def register_admin_handlers(app, settings: Settings, services: dict):
 
         # --- Questionnaire wizard (create/edit/delete) ---
         if mode == "q_create_question":
-            payload = {"mode": "q_create_charts", "question": text}
+            payload = {"mode": "q_create_day", "question": text}
+            state.set_state(update.effective_user.id, ADMIN_WIZARD_STEP, payload)
+            await update.effective_message.reply_text("Для какого дня эта анкета? (целое число, например: 1)")
+            return
+
+        if mode == "q_create_day":
+            if not re.match(r"^\d+$", text):
+                await update.effective_message.reply_text("Нужен номер дня (целое число)."); raise ApplicationHandlerStop
+            day = int(text)
+            if day <= 0:
+                await update.effective_message.reply_text("Номер дня должен быть больше нуля."); raise ApplicationHandlerStop
+            payload["day_index"] = day
+            payload["mode"] = "q_create_charts"
             state.set_state(update.effective_user.id, ADMIN_WIZARD_STEP, payload)
             await update.effective_message.reply_text("Учитывать в диаграммах? (Да/Нет)", reply_markup=kb_yes_no())
             return
@@ -1246,7 +1261,15 @@ def register_admin_handlers(app, settings: Settings, services: dict):
         if mode == "q_create_points":
             if not re.match(r"^\d+$", text):
                 await update.effective_message.reply_text("Нужно целое число, например: 1"); raise ApplicationHandlerStop
-            qid = qsvc.create(payload["question"], "manual", bool(payload["use_in_charts"]), int(text), update.effective_user.id)
+            day_index = int(payload.get("day_index") or 1)
+            qid = qsvc.create(
+                payload["question"],
+                "manual",
+                bool(payload["use_in_charts"]),
+                int(text),
+                update.effective_user.id,
+                day_index=day_index,
+            )
             item = qsvc.get(qid)
             state.clear_state(update.effective_user.id)
             await _show_q_menu(update)
@@ -1260,13 +1283,32 @@ def register_admin_handlers(app, settings: Settings, services: dict):
             item = qsvc.get(qid)
             if not item:
                 await update.effective_message.reply_text("⚠️ Анкета не найдена."); raise ApplicationHandlerStop
-            payload = {"mode": "q_edit_question", "id": qid}
+            payload = {
+                "mode": "q_edit_question",
+                "id": qid,
+                "qtype": str(item.get("qtype") or "manual"),
+                "day_index": item.get("day_index"),
+            }
             state.set_state(update.effective_user.id, ADMIN_WIZARD_STEP, payload)
             await update.effective_message.reply_text(f"Текущий вопрос:\n{item['question']}\n\nВведи новый вопрос.")
             return
 
         if mode == "q_edit_question":
             payload["question"] = text
+            payload["mode"] = "q_edit_day"
+            state.set_state(update.effective_user.id, ADMIN_WIZARD_STEP, payload)
+            current_day = payload.get("day_index")
+            day_hint = f"{int(current_day)}" if current_day is not None else "не задан"
+            await update.effective_message.reply_text(f"Текущий день: {day_hint}\nВведи новый номер дня (целое число).")
+            return
+
+        if mode == "q_edit_day":
+            if not re.match(r"^\d+$", text):
+                await update.effective_message.reply_text("Нужен номер дня (целое число)."); raise ApplicationHandlerStop
+            day = int(text)
+            if day <= 0:
+                await update.effective_message.reply_text("Номер дня должен быть больше нуля."); raise ApplicationHandlerStop
+            payload["day_index"] = day
             payload["mode"] = "q_edit_charts"
             state.set_state(update.effective_user.id, ADMIN_WIZARD_STEP, payload)
             await update.effective_message.reply_text("Учитывать в диаграммах? (Да/Нет)", reply_markup=kb_yes_no())
@@ -1286,7 +1328,15 @@ def register_admin_handlers(app, settings: Settings, services: dict):
             if not re.match(r"^\d+$", text):
                 await update.effective_message.reply_text("Нужно целое число, например: 1"); raise ApplicationHandlerStop
             qid = int(payload["id"])
-            qsvc.update(qid, payload["question"], "manual", bool(payload["use_in_charts"]), int(text))
+            day_index = int(payload.get("day_index") or 1)
+            qsvc.update(
+                qid,
+                payload["question"],
+                str(payload.get("qtype") or "manual"),
+                bool(payload["use_in_charts"]),
+                int(text),
+                day_index=day_index,
+            )
             state.clear_state(update.effective_user.id)
             await _show_q_menu(update)
             await update.effective_message.reply_text("✅ Анкета обновлена.")

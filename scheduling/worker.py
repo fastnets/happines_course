@@ -25,6 +25,36 @@ async def _deep_link(context: ContextTypes.DEFAULT_TYPE, payload: str) -> str | 
     return f"https://t.me/{uname}?start={payload}"
 
 
+def _collect_pending_backlog(schedule, learning, qsvc, user_id: int, day_index: int):
+    """Collect unfinished items from day 1..day_index for cumulative reminders."""
+
+    pending = []
+    first_lesson_day = None
+    first_quest_day = None
+
+    for d in range(1, day_index + 1):
+        lesson = schedule.lesson.get_by_day(d)
+        if lesson and (not learning.has_viewed_lesson(user_id, d)):
+            pending.append(f"• 📚 День {d}: лекция — не отмечена «Просмотрено»")
+            if first_lesson_day is None:
+                first_lesson_day = d
+
+        quest = schedule.quest.get_by_day(d)
+        if quest and (not learning.has_quest_answer(user_id, d)):
+            pending.append(f"• 📝 День {d}: задание — нет ответа")
+            if first_quest_day is None:
+                first_quest_day = d
+
+        day_questionnaires = qsvc.list_for_day(d, qtypes=("manual", "daily"))
+        has_pending_questionnaire = any(
+            not qsvc.has_response(user_id, int(row["id"])) for row in day_questionnaires
+        )
+        if has_pending_questionnaire:
+            pending.append(f"• 📋 День {d}: анкета — нет ответа")
+
+    return pending, first_lesson_day, first_quest_day
+
+
 async def tick(context: ContextTypes.DEFAULT_TYPE, services: dict):
     # Create new outbox jobs (lessons/quests + daily reminder) and then deliver due ones
     services["schedule"].schedule_due_jobs()
@@ -166,14 +196,13 @@ async def _process_outbox(context: ContextTypes.DEFAULT_TYPE, services: dict):
                     outbox.mark_sent(job_id)
                     continue
 
-                pending = []
-                lesson = schedule.lesson.get_by_day(day_index)
-                if lesson and (not learning.has_viewed_lesson(user_id, day_index)):
-                    pending.append("• 📚 Лекция — не отмечена «Просмотрено»")
-
-                quest = schedule.quest.get_by_day(day_index)
-                if quest and (not learning.has_quest_answer(user_id, day_index)):
-                    pending.append("• 📝 Задание — нет ответа")
+                pending, first_lesson_day, first_quest_day = _collect_pending_backlog(
+                    schedule,
+                    learning,
+                    qsvc,
+                    user_id,
+                    day_index,
+                )
 
                 if not pending:
                     if for_date:
@@ -183,21 +212,21 @@ async def _process_outbox(context: ContextTypes.DEFAULT_TYPE, services: dict):
 
                 text = (
                     "🔔 Напоминание про твой день\n\n"
-                    "У тебя осталось:\n"
+                    "У тебя есть незавершенные материалы:\n"
                     + "\n".join(pending)
                     + "\n\nНажми кнопку ниже, чтобы вернуться к нужному материалу ✅"
                 )
 
                 buttons = []
                 # Deep links back into the exact unfinished content
-                if lesson and (not learning.has_viewed_lesson(user_id, day_index)):
-                    url = await _deep_link(context, f"gol_{day_index}")
+                if first_lesson_day is not None:
+                    url = await _deep_link(context, f"gol_{first_lesson_day}")
                     if url:
-                        buttons.append([InlineKeyboardButton("📚 Перейти к лекции", url=url)])
-                if quest and (not learning.has_quest_answer(user_id, day_index)):
-                    url = await _deep_link(context, f"goq_{day_index}")
+                        buttons.append([InlineKeyboardButton("📚 Открыть первую незавершенную лекцию", url=url)])
+                if first_quest_day is not None:
+                    url = await _deep_link(context, f"goq_{first_quest_day}")
                     if url:
-                        buttons.append([InlineKeyboardButton("📝 Перейти к заданию", url=url)])
+                        buttons.append([InlineKeyboardButton("📝 Открыть первое незавершенное задание", url=url)])
 
                 reply_markup = InlineKeyboardMarkup(buttons) if buttons else None
                 await context.bot.send_message(chat_id=user_id, text=text, reply_markup=reply_markup)
@@ -222,7 +251,8 @@ async def _process_outbox(context: ContextTypes.DEFAULT_TYPE, services: dict):
                     reply_markup=q_buttons(qid),
                 )
                 if (not is_optional) and day_index and for_date:
-                    schedule.sent_jobs.mark_sent(user_id, "questionnaire", day_index, for_date)
+                    q_content_type = schedule.questionnaire_content_type(qid)
+                    schedule.sent_jobs.mark_sent(user_id, q_content_type, day_index, for_date)
                 outbox.mark_sent(job_id)
                 continue
 

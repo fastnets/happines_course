@@ -13,8 +13,16 @@ class QuestionnaireService:
         self.points = PointsRepo(db)
         self.state = StateRepo(db)
 
-    def create(self, question: str, qtype: str, use_in_charts: bool, points: int, created_by: int | None):
-        return self.q.create(question, qtype, use_in_charts, points, created_by)
+    def create(
+        self,
+        question: str,
+        qtype: str,
+        use_in_charts: bool,
+        points: int,
+        created_by: int | None,
+        day_index: int | None = None,
+    ):
+        return self.q.create(question, qtype, use_in_charts, points, created_by, day_index=day_index)
 
     def list_latest(self, limit=50):
         return self.q.list_latest(limit)
@@ -22,8 +30,22 @@ class QuestionnaireService:
     def get(self, qid: int):
         return self.q.get(qid)
 
-    def update(self, qid: int, question: str, qtype: str, use_in_charts: bool, points: int):
-        self.q.update(qid, question, qtype, use_in_charts, points)
+    def list_for_day(self, day_index: int, qtypes: tuple[str, ...] = ("manual",)):
+        return self.q.list_by_day(day_index, qtypes=qtypes)
+
+    def has_response(self, user_id: int, questionnaire_id: int) -> bool:
+        return self.q.has_user_response(user_id, questionnaire_id)
+
+    def update(
+        self,
+        qid: int,
+        question: str,
+        qtype: str,
+        use_in_charts: bool,
+        points: int,
+        day_index: int | None = None,
+    ):
+        self.q.update(qid, question, qtype, use_in_charts, points, day_index=day_index)
 
     def delete(self, qid: int) -> bool:
         return self.q.delete(qid)

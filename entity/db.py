@@ -131,11 +131,14 @@ CREATE TABLE IF NOT EXISTS questionnaires (
   id SERIAL PRIMARY KEY,
   question TEXT NOT NULL,
   qtype TEXT NOT NULL DEFAULT 'manual',
+  day_index INT,
   use_in_charts BOOLEAN NOT NULL DEFAULT FALSE,
   points INT NOT NULL DEFAULT 1,
   created_by BIGINT,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+
+CREATE INDEX IF NOT EXISTS idx_questionnaires_qtype_day ON questionnaires(qtype, day_index, id DESC);
 
 CREATE TABLE IF NOT EXISTS questionnaire_responses (
   id SERIAL PRIMARY KEY,
@@ -262,6 +265,8 @@ MIGRATIONS_SQL = [
     "ALTER TABLE admins ADD COLUMN IF NOT EXISTS role TEXT NOT NULL DEFAULT 'admin'",
     "CREATE TABLE IF NOT EXISTS deliveries (user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE, day_index INT NOT NULL, item_type TEXT NOT NULL, sent_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), PRIMARY KEY (user_id, day_index, item_type))",
     "CREATE TABLE IF NOT EXISTS sent_jobs (user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE, content_type TEXT NOT NULL, day_index INT NOT NULL, for_date DATE NOT NULL, sent_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), PRIMARY KEY (user_id, content_type, day_index, for_date))",
+    "ALTER TABLE questionnaires ADD COLUMN IF NOT EXISTS day_index INT",
+    "CREATE INDEX IF NOT EXISTS idx_questionnaires_qtype_day ON questionnaires(qtype, day_index, id DESC)",
 
     # Daily packs
     "CREATE TABLE IF NOT EXISTS daily_sets (id SERIAL PRIMARY KEY, utc_date DATE NOT NULL, lesson_day_index INT, topic TEXT NOT NULL, trigger TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'pending', created_at TIMESTAMPTZ NOT NULL DEFAULT NOW())",

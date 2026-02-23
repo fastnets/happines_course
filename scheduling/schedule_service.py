@@ -124,10 +124,16 @@ class ScheduleService:
         """Cancel future pending jobs for the user and schedule again (today+tomorrow)."""
 
         now_utc = datetime.now(timezone.utc)
-        # Cancel only daily pipeline kinds (don't touch admin questionnaire broadcasts)
+        # Cancel only daily pipeline kinds.
         cancelled = self.outbox.cancel_future_jobs(
             user_id,
-            kinds=["day_lesson", "day_quest", "questionnaire_broadcast", "daily_reminder"],
+            kinds=["day_lesson", "day_quest", "daily_reminder"],
+            from_utc_iso=now_utc.isoformat(),
+        )
+        # Regular questionnaires use kind=questionnaire_broadcast as well,
+        # so cancel only job_key that belongs to day planning.
+        cancelled += self.outbox.cancel_future_day_questionnaire_jobs(
+            user_id=user_id,
             from_utc_iso=now_utc.isoformat(),
         )
         created = self._schedule_for_user(user_id, now_utc)
@@ -171,6 +177,10 @@ class ScheduleService:
             return int(dt.timestamp())
         except Exception:
             return 0
+
+    @staticmethod
+    def questionnaire_content_type(questionnaire_id: int) -> str:
+        return f"questionnaire:{int(questionnaire_id)}"
 
     # ----------------------------
     # Public API
@@ -239,9 +249,9 @@ class ScheduleService:
 
             lesson = self.lesson.get_by_day(day_index)
             q = self.quest.get_by_day(day_index)
-            daily_q = self.questionnaires.get_latest_by_qtype("daily")
+            day_questionnaires = self.questionnaires.list_by_day(day_index, qtypes=("manual", "daily"))
 
-            if not lesson and not q and not daily_q:
+            if not lesson and not q and not day_questionnaires:
                 continue
 
             # Auto-delivery guardrail for lessons/quests: if we're too late for today's window, skip.
@@ -292,21 +302,26 @@ class ScheduleService:
                         self.outbox.create_job(user_id, run_at_utc.isoformat(), payload)
                         created += 1
 
-                # Daily questionnaire (qtype='daily')
-                if daily_q and not self.sent_jobs.was_sent(user_id, "questionnaire", day_index, for_date):
-                    qid = int(daily_q["id"])
+                # Day questionnaires: multiple questionnaires per day are supported.
+                for qrow in day_questionnaires:
+                    qid = int(qrow["id"])
+                    q_content_type = self.questionnaire_content_type(qid)
+                    if self.sent_jobs.was_sent(user_id, q_content_type, day_index, for_date):
+                        continue
                     q_key = f"questionnaire:{qid}:day={day_index}:date={for_date.isoformat()}"
-                    if not self.outbox.exists_job_for(user_id, q_key):
-                        payload = {
-                            "kind": "questionnaire_broadcast",
-                            "job_key": q_key,
-                            "day_index": day_index,
-                            "for_date": for_date.isoformat(),
-                            "questionnaire_id": qid,
-                        }
-                        self._log_job(user_id, "questionnaire_broadcast", q_key, user_tz, for_date, delivery_hhmm, run_at_utc)
-                        self.outbox.create_job(user_id, run_at_utc.isoformat(), payload)
-                        created += 1
+                    if self.outbox.exists_job_for(user_id, q_key):
+                        continue
+                    payload = {
+                        "kind": "questionnaire_broadcast",
+                        "job_key": q_key,
+                        "day_index": day_index,
+                        "for_date": for_date.isoformat(),
+                        "questionnaire_id": qid,
+                        "optional": False,
+                    }
+                    self._log_job(user_id, "questionnaire_broadcast", q_key, user_tz, for_date, delivery_hhmm, run_at_utc)
+                    self.outbox.create_job(user_id, run_at_utc.isoformat(), payload)
+                    created += 1
 
             # Daily reminder: schedule regardless of grace window (can still remind if delivery missed)
             if not self.sent_jobs.was_sent(user_id, "daily_reminder", day_index, for_date):
@@ -341,11 +356,15 @@ class ScheduleService:
 
         lesson = self.lesson.get_by_day(day_index)
         q = self.quest.get_by_day(day_index)
-        if not lesson and not q:
+        day_questionnaires = self.questionnaires.list_by_day(day_index, qtypes=("manual", "daily"))
+        if not lesson and not q and not day_questionnaires:
             return 0
 
         created = 0
-        run_utc = datetime.now(timezone.utc).isoformat()
+        now_utc = datetime.now(timezone.utc)
+        run_utc = now_utc.isoformat()
+        user_tz = self._user_tz(user_id)
+        for_date = now_utc.astimezone(user_tz).date()
 
         if lesson:
             lesson_id = int(lesson["id"])
@@ -383,6 +402,22 @@ class ScheduleService:
                 }
                 self.outbox.create_job(user_id, run_utc, payload)
                 created += 1
+
+        for qrow in day_questionnaires:
+            qid = int(qrow["id"])
+            q_key = f"questionnaire:{qid}:day={day_index}:date={for_date.isoformat()}"
+            if self.outbox.exists_job_for(user_id, q_key):
+                continue
+            payload = {
+                "kind": "questionnaire_broadcast",
+                "job_key": q_key,
+                "day_index": day_index,
+                "for_date": for_date.isoformat(),
+                "questionnaire_id": qid,
+                "optional": False,
+            }
+            self.outbox.create_job(user_id, run_utc, payload)
+            created += 1
 
         return created
 

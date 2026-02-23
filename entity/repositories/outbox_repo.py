@@ -94,3 +94,21 @@ class OutboxRepo:
                 (from_utc_iso, reminder_id),
             )
             return cur.rowcount
+
+    def cancel_future_day_questionnaire_jobs(self, user_id: int, from_utc_iso: str) -> int:
+        """Cancel future planned day questionnaires only (keep one-time qcast jobs)."""
+
+        with self.db.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE outbox_jobs
+                   SET status='cancelled'
+                 WHERE user_id=%s
+                   AND status='pending'
+                   AND run_at >= %s
+                   AND payload_json->>'kind'='questionnaire_broadcast'
+                   AND payload_json->>'job_key' LIKE 'questionnaire:%%'
+                """,
+                (user_id, from_utc_iso),
+            )
+            return cur.rowcount
