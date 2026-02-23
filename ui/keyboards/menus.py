@@ -19,6 +19,7 @@ def kb_day() -> ReplyKeyboardMarkup:
         [KeyboardButton(texts.DAY_QUOTE)],
         [KeyboardButton(texts.DAY_PIC), KeyboardButton(texts.DAY_TIP)],
         [KeyboardButton(texts.DAY_BOOK), KeyboardButton(texts.DAY_FILM)],
+        [KeyboardButton(texts.DAY_MOOD)],
         [KeyboardButton(texts.DAY_MATERIALS_NOW)],
         [KeyboardButton(texts.BTN_BACK)],
     ]

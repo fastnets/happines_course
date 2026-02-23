@@ -66,6 +66,10 @@ HELP_ESCALATE = "help:escalate"
 HELP_ESCALATE_TEXT = "📨 Направить вопрос администрации"
 ADMIN_TICKET_OPEN_PREFIX = "admin_ticket:open:"
 ADMIN_TICKET_REPLY_PREFIX = "admin_ticket:reply:"
+MOOD_MENU_CB = "mood:menu"
+MOOD_RATE_CB = "mood:rate"
+MOOD_SET_PREFIX = "mood:set:"
+MOOD_CHART_PREFIX = "mood:chart:"
 
 
 def _faq_items() -> list[tuple[str, str]]:
@@ -96,6 +100,7 @@ def register_user_handlers(app, settings: Settings, services: dict):
     pr_svc = services.get("personal_reminder")
     pr_schedule = services.get("personal_reminder_schedule")
     support_svc = services.get("support")
+    mood_svc = services.get("mood")
 
     def _is_admin(uid: int) -> bool:
         try:
@@ -236,6 +241,33 @@ def register_user_handlers(app, settings: Settings, services: dict):
             [
                 [InlineKeyboardButton(HELP_ESCALATE_TEXT, callback_data=HELP_ESCALATE)],
                 [InlineKeyboardButton("⬅️ К вопросам", callback_data=HELP_FAQ_LIST)],
+            ]
+        )
+
+    @staticmethod
+    def _mood_menu_markup() -> InlineKeyboardMarkup:
+        return InlineKeyboardMarkup(
+            [
+                [InlineKeyboardButton("✍️ Отметить настроение", callback_data=MOOD_RATE_CB)],
+                [
+                    InlineKeyboardButton("📈 График 7 дн.", callback_data=f"{MOOD_CHART_PREFIX}7"),
+                    InlineKeyboardButton("📈 График 30 дн.", callback_data=f"{MOOD_CHART_PREFIX}30"),
+                ],
+            ]
+        )
+
+    @staticmethod
+    def _mood_rate_markup() -> InlineKeyboardMarkup:
+        return InlineKeyboardMarkup(
+            [
+                [
+                    InlineKeyboardButton("1", callback_data=f"{MOOD_SET_PREFIX}1"),
+                    InlineKeyboardButton("2", callback_data=f"{MOOD_SET_PREFIX}2"),
+                    InlineKeyboardButton("3", callback_data=f"{MOOD_SET_PREFIX}3"),
+                    InlineKeyboardButton("4", callback_data=f"{MOOD_SET_PREFIX}4"),
+                    InlineKeyboardButton("5", callback_data=f"{MOOD_SET_PREFIX}5"),
+                ],
+                [InlineKeyboardButton("⬅️ Назад", callback_data=MOOD_MENU_CB)],
             ]
         )
 
@@ -915,6 +947,60 @@ def register_user_handlers(app, settings: Settings, services: dict):
             )
             return
 
+    async def mood_pick(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        q = update.callback_query
+        data = (q.data or "").strip()
+        if not data.startswith("mood:"):
+            return
+        await q.answer()
+        uid = q.from_user.id
+
+        if not mood_svc:
+            await context.bot.send_message(chat_id=uid, text="❌ Трекер настроения временно недоступен.")
+            return
+
+        if data == MOOD_MENU_CB:
+            await q.edit_message_text(
+                "😊 Настроение\n\nВыбери действие:",
+                reply_markup=_mood_menu_markup(),
+            )
+            return
+
+        if data == MOOD_RATE_CB:
+            await q.edit_message_text(
+                "Оцени настроение за сегодня (1-5):",
+                reply_markup=_mood_rate_markup(),
+            )
+            return
+
+        if data.startswith(MOOD_SET_PREFIX):
+            raw = data.replace(MOOD_SET_PREFIX, "", 1)
+            if raw not in ("1", "2", "3", "4", "5"):
+                await q.answer("Некорректная оценка", show_alert=False)
+                return
+            score = int(raw)
+            row = mood_svc.set_today(uid, score)
+            if not row:
+                await context.bot.send_message(chat_id=uid, text="⚠️ Не смог сохранить настроение.")
+                return
+            await q.edit_message_text(
+                f"✅ Сохранил настроение за сегодня: {score}/5",
+                reply_markup=_mood_menu_markup(),
+            )
+            return
+
+        if data.startswith(MOOD_CHART_PREFIX):
+            raw = data.replace(MOOD_CHART_PREFIX, "", 1)
+            days = 7
+            try:
+                days = int(raw)
+            except Exception:
+                days = 7
+            if days not in (7, 30):
+                days = 7
+            await context.bot.send_message(chat_id=uid, text=mood_svc.chart_text(uid, days))
+            return
+
     # ----------------------------
     # Text input steps (name / time / tz / custom enroll time)
     # ----------------------------
@@ -967,6 +1053,7 @@ def register_user_handlers(app, settings: Settings, services: dict):
             texts.DAY_TIP,
             texts.DAY_BOOK,
             texts.DAY_FILM,
+            texts.DAY_MOOD,
             texts.DAY_MATERIALS_NOW,
             texts.PROGRESS_REFRESH,
             texts.SETTINGS_TIME,
@@ -1674,6 +1761,7 @@ def register_user_handlers(app, settings: Settings, services: dict):
             texts.DAY_TIP,
             texts.DAY_BOOK,
             texts.DAY_FILM,
+            texts.DAY_MOOD,
             texts.DAY_MATERIALS_NOW,
             texts.PROGRESS_REFRESH,
             texts.SETTINGS_TIME,
@@ -1746,6 +1834,16 @@ def register_user_handlers(app, settings: Settings, services: dict):
             raise ApplicationHandlerStop
 
         # Day submenu
+        if text == texts.DAY_MOOD:
+            if not mood_svc:
+                await update.effective_message.reply_text("❌ Трекер настроения временно недоступен.")
+                raise ApplicationHandlerStop
+            await update.effective_message.reply_text(
+                "😊 Настроение\n\nВыбери действие:",
+                reply_markup=_mood_menu_markup(),
+            )
+            raise ApplicationHandlerStop
+
         if text == texts.DAY_MATERIALS_NOW:
             pending, first_lesson_day, first_quest_day, first_questionnaire = _collect_pending_materials(uid)
             if not pending:
@@ -2104,6 +2202,12 @@ def register_user_handlers(app, settings: Settings, services: dict):
         CallbackQueryHandler(
             reminder_nav_pick,
             pattern=r"^remnav:(next|lesson:\d+|quest:\d+|questionnaire:\d+:\d+)$",
+        )
+    )
+    app.add_handler(
+        CallbackQueryHandler(
+            mood_pick,
+            pattern=r"^mood:(menu|rate|set:[1-5]|chart:(7|30))$",
         )
     )
     app.add_handler(CallbackQueryHandler(help_faq_pick, pattern=r"^help:(faq:\d+|faq:list|escalate)$"))

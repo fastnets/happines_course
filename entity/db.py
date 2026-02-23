@@ -149,6 +149,20 @@ CREATE TABLE IF NOT EXISTS questionnaire_responses (
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
+-- Personal mood tracker entries (independent from course questionnaires).
+CREATE TABLE IF NOT EXISTS mood_entries (
+  id SERIAL PRIMARY KEY,
+  user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  local_date DATE NOT NULL,
+  score INT NOT NULL,
+  comment TEXT NOT NULL DEFAULT '',
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  UNIQUE(user_id, local_date)
+);
+
+CREATE INDEX IF NOT EXISTS idx_mood_entries_user_date ON mood_entries(user_id, local_date DESC);
+
 CREATE TABLE IF NOT EXISTS outbox_jobs (
   id SERIAL PRIMARY KEY,
   user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -281,6 +295,9 @@ MIGRATIONS_SQL = [
     "CREATE TABLE IF NOT EXISTS sent_jobs (user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE, content_type TEXT NOT NULL, day_index INT NOT NULL, for_date DATE NOT NULL, sent_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), PRIMARY KEY (user_id, content_type, day_index, for_date))",
     "ALTER TABLE questionnaires ADD COLUMN IF NOT EXISTS day_index INT",
     "CREATE INDEX IF NOT EXISTS idx_questionnaires_qtype_day ON questionnaires(qtype, day_index, id DESC)",
+    # Mood tracker
+    "CREATE TABLE IF NOT EXISTS mood_entries (id SERIAL PRIMARY KEY, user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE, local_date DATE NOT NULL, score INT NOT NULL, comment TEXT NOT NULL DEFAULT '', created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), UNIQUE(user_id, local_date))",
+    "CREATE INDEX IF NOT EXISTS idx_mood_entries_user_date ON mood_entries(user_id, local_date DESC)",
 
     # Daily packs
     "CREATE TABLE IF NOT EXISTS daily_sets (id SERIAL PRIMARY KEY, utc_date DATE NOT NULL, lesson_day_index INT, topic TEXT NOT NULL, trigger TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'pending', created_at TIMESTAMPTZ NOT NULL DEFAULT NOW())",
