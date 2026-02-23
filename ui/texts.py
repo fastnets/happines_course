@@ -14,7 +14,7 @@ DAY_PIC = "🖼 Картинка дня"
 DAY_TIP = "💡 Совет дня"
 DAY_BOOK = "📚 Книга дня"
 DAY_FILM = "🎬 Фильм дня"
-DAY_MATERIALS_NOW = "Получить раньше поставленного времени"
+DAY_MATERIALS_NOW = "Получить пропущенные материалы"
 
 # Progress
 PROGRESS_REFRESH = "🔄 Обновить"

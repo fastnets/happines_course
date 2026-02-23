@@ -250,6 +250,20 @@ CREATE TABLE IF NOT EXISTS habit_occurrences (
 
 CREATE INDEX IF NOT EXISTS idx_habit_occ_user_sched ON habit_occurrences(user_id, scheduled_at, status);
 
+-- Last sent material message ids (for reminder navigation via reply_to_message_id).
+CREATE TABLE IF NOT EXISTS user_material_messages (
+  user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  day_index INT NOT NULL,
+  kind TEXT NOT NULL, -- 'lesson' | 'quest' | 'questionnaire'
+  content_id INT NOT NULL DEFAULT 0, -- questionnaire_id for questionnaires, 0 otherwise
+  message_id BIGINT NOT NULL,
+  sent_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  PRIMARY KEY (user_id, day_index, kind, content_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_user_material_messages_lookup
+ON user_material_messages(user_id, day_index, kind, sent_at DESC);
+
 '''
 
 MIGRATIONS_SQL = [
@@ -319,6 +333,10 @@ MIGRATIONS_SQL = [
     # Habit occurrences
     "CREATE TABLE IF NOT EXISTS habit_occurrences (id SERIAL PRIMARY KEY, habit_id INT NOT NULL REFERENCES habits(id) ON DELETE CASCADE, user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE, scheduled_at TIMESTAMPTZ NOT NULL, status TEXT NOT NULL DEFAULT 'planned', action_at TIMESTAMPTZ, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), UNIQUE(habit_id, scheduled_at))",
     "CREATE INDEX IF NOT EXISTS idx_habit_occ_user_sched ON habit_occurrences(user_id, scheduled_at, status)",
+    # Material message pointers for reminder navigation.
+    "CREATE TABLE IF NOT EXISTS user_material_messages (user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE, day_index INT NOT NULL, kind TEXT NOT NULL, content_id INT NOT NULL DEFAULT 0, message_id BIGINT NOT NULL, sent_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), PRIMARY KEY (user_id, day_index, kind, content_id))",
+    "ALTER TABLE user_material_messages ADD COLUMN IF NOT EXISTS content_id INT NOT NULL DEFAULT 0",
+    "CREATE INDEX IF NOT EXISTS idx_user_material_messages_lookup ON user_material_messages(user_id, day_index, kind, sent_at DESC)",
 ]
 
 class Database:

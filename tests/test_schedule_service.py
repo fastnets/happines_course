@@ -30,6 +30,10 @@ class DummyQuestionnairesByDay:
             return [{"id": 11}, {"id": 12}]
         return []
 
+    def has_user_response(self, user_id: int, questionnaire_id: int) -> bool:
+        _ = user_id, questionnaire_id
+        return False
+
 
 class DummySentJobs:
     def __init__(self):
@@ -39,6 +43,34 @@ class DummySentJobs:
         self.calls.append((user_id, content_type, day_index, for_date))
         # Keep reminders out of this test.
         return content_type == "daily_reminder"
+
+
+class DummySentJobsNever:
+    def __init__(self):
+        self.calls = []
+
+    def was_sent(self, user_id: int, content_type: str, day_index: int, for_date):
+        self.calls.append((user_id, content_type, day_index, for_date))
+        return False
+
+
+class DummyPoints:
+    def __init__(self, viewed_days=None):
+        self.viewed_days = set(viewed_days or [])
+
+    def has_entry(self, user_id: int, source_type: str, source_key: str | None) -> bool:
+        _ = user_id, source_type
+        day = int(str(source_key).split(":")[1])
+        return day in self.viewed_days
+
+
+class DummyAnswers:
+    def __init__(self, answered_days=None):
+        self.answered_days = set(answered_days or [])
+
+    def exists_for_day(self, user_id: int, day_index: int) -> bool:
+        _ = user_id
+        return day_index in self.answered_days
 
 
 class ScheduleServiceTests(unittest.TestCase):
@@ -103,6 +135,50 @@ class ScheduleServiceTests(unittest.TestCase):
         was_sent_types = [row[1] for row in svc.sent_jobs.calls]
         self.assertIn("questionnaire:11", was_sent_types)
         self.assertIn("questionnaire:12", was_sent_types)
+
+    def test_schedules_daily_reminder_when_only_backlog_exists(self):
+        svc = ScheduleService.__new__(ScheduleService)
+        svc.settings = type(
+            "S",
+            (),
+            {
+                "delivery_grace_minutes": 15,
+                "remind_after_hours": 12,
+                "reminder_fallback_time": "09:30",
+                "quiet_hours_start": "23:00",
+                "quiet_hours_end": "09:00",
+            },
+        )()
+        svc.lesson = type("L", (), {"get_by_day": staticmethod(lambda d: {"id": 1} if d == 1 else None)})()
+        svc.quest = type("Q", (), {"get_by_day": staticmethod(lambda _d: None)})()
+        svc.questionnaires = type(
+            "QQ",
+            (),
+            {
+                "list_by_day": staticmethod(lambda _day, qtypes=("manual", "daily"): []),
+                "has_user_response": staticmethod(lambda _uid, _qid: False),
+            },
+        )()
+        svc.points = DummyPoints(viewed_days=set())  # day 1 lesson is not viewed -> backlog exists
+        svc.answers = DummyAnswers(answered_days=set())
+        svc.sent_jobs = DummySentJobsNever()
+        svc.outbox = DummyOutbox()
+        svc._user_tz = lambda _uid: ZoneInfo("UTC")
+        svc._log_job = lambda *args, **kwargs: None
+
+        now_utc = datetime(2026, 2, 25, 10, 0, tzinfo=timezone.utc)  # user is on day 3
+        svc.day_index_for_local_date = lambda _uid, d: 3 if d == date(2026, 2, 25) else 4
+
+        created = svc._schedule_for_user(
+            user_id=951667241,
+            now_utc=now_utc,
+            enrollment_row={"user_id": 951667241, "delivery_time": "21:00"},
+        )
+
+        reminder_payloads = [row[2] for row in svc.outbox.created if row[2].get("kind") == "daily_reminder"]
+        self.assertGreaterEqual(created, 1)
+        self.assertGreaterEqual(len(reminder_payloads), 1)
+        self.assertEqual(reminder_payloads[0]["day_index"], 3)
 
 
 if __name__ == "__main__":

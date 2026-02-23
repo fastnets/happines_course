@@ -33,3 +33,7 @@ HABIT_DONE_PREFIX = "habit:done:"
 HABIT_SKIP_PREFIX = "habit:skip:"
 HABIT_TOGGLE_PREFIX = "habit:toggle:"
 HABIT_DELETE_PREFIX = "habit:delete:"
+
+# Reminder navigation (jump back to already sent material in chat)
+REMINDER_NAV_PREFIX = "remnav:"
+REMINDER_NAV_NEXT = "remnav:next"

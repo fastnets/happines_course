@@ -17,6 +17,7 @@ from telegram.ext import (
 
 from entity.settings import Settings
 from event_bus import callbacks as cb
+from questionnaires.questionnaire_handlers import q_buttons
 from static.faq import FAQ
 from ui import texts
 from ui.keyboards import menus
@@ -87,6 +88,7 @@ def register_user_handlers(app, settings: Settings, services: dict):
     schedule = services["schedule"]
     learning = services.get("learning")
     daily = services.get("daily_pack")
+    qsvc = services.get("questionnaire")
     admin_svc = services.get("admin")
     achievement_svc = services.get("achievement")
     habit_svc = services.get("habit")
@@ -237,6 +239,253 @@ def register_user_handlers(app, settings: Settings, services: dict):
             ]
         )
 
+    def _parse_reminder_nav_data(data: str) -> dict | None:
+        d = (data or "").strip()
+        if not d:
+            return None
+        if d == cb.REMINDER_NAV_NEXT:
+            return {"mode": "next"}
+        if not d.startswith(cb.REMINDER_NAV_PREFIX):
+            return None
+
+        raw = d[len(cb.REMINDER_NAV_PREFIX):]
+        parts = raw.split(":")
+        if len(parts) < 2:
+            return None
+
+        kind = parts[0].strip()
+        if kind not in ("lesson", "quest", "questionnaire"):
+            return None
+        if not parts[1].isdigit():
+            return None
+
+        item = {"mode": "item", "kind": kind, "day_index": int(parts[1])}
+        if kind == "questionnaire":
+            if len(parts) < 3 or (not parts[2].isdigit()):
+                return None
+            item["questionnaire_id"] = int(parts[2])
+        return item
+
+    def _first_pending_material(uid: int) -> dict | None:
+        if not learning or not qsvc:
+            return None
+
+        day_now = max(1, int(schedule.current_day_index(uid)))
+        for d in range(1, day_now + 1):
+            lesson = schedule.lesson.get_by_day(d)
+            if lesson and (not learning.has_viewed_lesson(uid, d)):
+                return {"kind": "lesson", "day_index": d}
+
+            quest = schedule.quest.get_by_day(d)
+            if quest and (not learning.has_quest_answer(uid, d)):
+                return {"kind": "quest", "day_index": d}
+
+            for row in qsvc.list_for_day(d, qtypes=("manual", "daily")):
+                qid = int(row["id"])
+                if not qsvc.has_response(uid, qid):
+                    return {"kind": "questionnaire", "day_index": d, "questionnaire_id": qid}
+        return None
+
+    def _collect_pending_materials(uid: int) -> tuple[list[str], int | None, int | None, tuple[int, int] | None]:
+        if not learning or not qsvc:
+            return [], None, None, None
+
+        pending: list[str] = []
+        first_lesson_day: int | None = None
+        first_quest_day: int | None = None
+        first_questionnaire: tuple[int, int] | None = None
+
+        day_now = max(1, int(schedule.current_day_index(uid)))
+        for d in range(1, day_now + 1):
+            lesson = schedule.lesson.get_by_day(d)
+            if lesson and (not learning.has_viewed_lesson(uid, d)):
+                pending.append(f"• 📚 День {d}: лекция — не отмечена «Просмотрено»")
+                if first_lesson_day is None:
+                    first_lesson_day = d
+
+            quest = schedule.quest.get_by_day(d)
+            if quest and (not learning.has_quest_answer(uid, d)):
+                pending.append(f"• 📝 День {d}: задание — нет ответа")
+                if first_quest_day is None:
+                    first_quest_day = d
+
+            for row in qsvc.list_for_day(d, qtypes=("manual", "daily")):
+                qid = int(row["id"])
+                if not qsvc.has_response(uid, qid):
+                    pending.append(f"• 📋 День {d}: анкета — нет ответа")
+                    if first_questionnaire is None:
+                        first_questionnaire = (d, qid)
+                    break
+
+        return pending, first_lesson_day, first_quest_day, first_questionnaire
+
+    def _remember_material_message(uid: int, item: dict, message_id: int):
+        try:
+            repo = getattr(schedule, "material_messages", None)
+            if not repo:
+                return
+            kind = str(item.get("kind") or "")
+            day_index = int(item.get("day_index") or 0)
+            content_id = int(item.get("questionnaire_id") or 0) if kind == "questionnaire" else 0
+            if day_index <= 0 or message_id <= 0:
+                return
+            repo.upsert(
+                user_id=uid,
+                day_index=day_index,
+                kind=kind,
+                content_id=content_id,
+                message_id=message_id,
+            )
+        except Exception:
+            pass
+
+    def _stored_material_message_id(uid: int, item: dict) -> int | None:
+        try:
+            repo = getattr(schedule, "material_messages", None)
+            if not repo:
+                return None
+            kind = str(item.get("kind") or "")
+            day_index = int(item.get("day_index") or 0)
+            if day_index <= 0 or kind not in ("lesson", "quest", "questionnaire"):
+                return None
+
+            row = None
+            if kind == "questionnaire":
+                qid = int(item.get("questionnaire_id") or 0)
+                if qid > 0:
+                    row = repo.get_message(uid, day_index, kind, content_id=qid)
+                if not row:
+                    row = repo.get_latest_message(uid, day_index, kind)
+            else:
+                row = repo.get_latest_message(uid, day_index, kind)
+
+            if not row:
+                return None
+            mid = int(row.get("message_id") or 0)
+            return mid if mid > 0 else None
+        except Exception:
+            return None
+
+    async def _resend_material(uid: int, item: dict, context: ContextTypes.DEFAULT_TYPE) -> bool:
+        kind = str(item.get("kind") or "")
+        day_index = int(item.get("day_index") or 0)
+        if day_index <= 0:
+            return False
+
+        if kind == "lesson":
+            lesson = schedule.lesson.get_by_day(day_index)
+            if not lesson:
+                return False
+            pts = int(lesson.get("points_viewed") or 0)
+            viewed_cb = schedule.make_viewed_cb(day_index, pts)
+            kb_i = InlineKeyboardMarkup(
+                [[InlineKeyboardButton("Просмотрено", callback_data=viewed_cb)]]
+            )
+            title = lesson.get("title") or f"День {day_index}"
+            desc = lesson.get("description") or ""
+            video = lesson.get("video_url") or ""
+            msg_text = f"📚 Лекция дня {day_index}\n{title}\n\n{desc}"
+            if video:
+                msg_text += f"\n\n🎥 {video}"
+            msg = await context.bot.send_message(
+                chat_id=uid,
+                text=msg_text,
+                reply_markup=kb_i,
+            )
+            _remember_material_message(uid, item, int(msg.message_id))
+            return True
+
+        if kind == "quest":
+            quest = schedule.quest.get_by_day(day_index)
+            if not quest:
+                return False
+            reply_cb = f"{cb.QUEST_REPLY_PREFIX}{day_index}"
+            kb_i = InlineKeyboardMarkup(
+                [[InlineKeyboardButton("✍️ Ответить на задание", callback_data=reply_cb)]]
+            )
+            qtext = (
+                f"📝 Задание дня {day_index}:\n{quest['prompt']}\n\n"
+                "Нажми кнопку ниже, чтобы продолжить, или просто ответь сообщением в чат."
+            )
+            msg = await context.bot.send_message(chat_id=uid, text=qtext, reply_markup=kb_i)
+            _remember_material_message(uid, item, int(msg.message_id))
+            learning.state.set_state(
+                uid,
+                "last_quest",
+                {
+                    "day_index": day_index,
+                    "points": int(quest.get("points") or 1),
+                    "prompt": quest.get("prompt"),
+                },
+            )
+            return True
+
+        if kind == "questionnaire" and qsvc:
+            qid = int(item.get("questionnaire_id") or 0)
+            if qid <= 0:
+                for row in qsvc.list_for_day(day_index, qtypes=("manual", "daily")):
+                    candidate = int(row["id"])
+                    if not qsvc.has_response(uid, candidate):
+                        qid = candidate
+                        break
+            if qid <= 0:
+                return False
+            qrow = qsvc.get(qid)
+            if not qrow:
+                return False
+            msg = await context.bot.send_message(
+                chat_id=uid,
+                text=f"📋 Анкета\n\n{qrow['question']}",
+                reply_markup=q_buttons(qid),
+            )
+            item_with_qid = {"kind": "questionnaire", "day_index": day_index, "questionnaire_id": qid}
+            _remember_material_message(uid, item_with_qid, int(msg.message_id))
+            return True
+
+        return False
+
+    async def reminder_nav_pick(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        q = update.callback_query
+        data = (q.data or "").strip()
+        parsed = _parse_reminder_nav_data(data)
+        if not parsed:
+            return
+
+        await q.answer()
+        uid = q.from_user.id
+
+        if parsed.get("mode") == "next":
+            item = _first_pending_material(uid)
+            if not item:
+                await context.bot.send_message(chat_id=uid, text="✅ Пропущенных материалов нет.")
+                return
+        else:
+            item = parsed
+
+        message_id = _stored_material_message_id(uid, item)
+        if message_id:
+            try:
+                await context.bot.send_message(
+                    chat_id=uid,
+                    text="↩️ Возвращаю к нужному сообщению выше.",
+                    reply_to_message_id=message_id,
+                )
+                return
+            except Exception:
+                pass
+
+        resent = await _resend_material(uid, item, context)
+        if resent:
+            await context.bot.send_message(
+                chat_id=uid,
+                text="Старая точка в чате не найдена — отправил материал заново.",
+            )
+        else:
+            await context.bot.send_message(
+                chat_id=uid,
+                text="⚠️ Не смог открыть материал. Попробуй через «🗓 Мой день».",
+            )
+
     async def _start_support_ticket_flow(update: Update):
         uid = update.effective_user.id
         user_svc.set_step(uid, STEP_SUPPORT_WAIT_TEXT, {})
@@ -284,11 +533,11 @@ def register_user_handlers(app, settings: Settings, services: dict):
                         title = lesson.get("title") or f"День {day_index}"
                         desc = lesson.get("description") or ""
                         video = lesson.get("video_url") or ""
-                        msg = f"📚 Лекция дня {day_index}\n*{title}*\n\n{desc}"
+                        msg = f"📚 Лекция дня {day_index}\n{title}\n\n{desc}"
                         if video:
                             msg += f"\n\n🎥 {video}"
                         await update.effective_message.reply_text(
-                            msg, parse_mode="Markdown", reply_markup=kb_i
+                            msg, reply_markup=kb_i
                         )
                 else:
                     quest = schedule.quest.get_by_day(day_index)
@@ -1498,11 +1747,61 @@ def register_user_handlers(app, settings: Settings, services: dict):
 
         # Day submenu
         if text == texts.DAY_MATERIALS_NOW:
-            day_index = schedule.current_day_index(uid)
-            created = schedule.enqueue_day_now(uid, day_index)
+            pending, first_lesson_day, first_quest_day, first_questionnaire = _collect_pending_materials(uid)
+            if not pending:
+                await update.effective_message.reply_text(
+                    "✅ Пропущенных материалов нет.",
+                    reply_markup=menus.kb_day(),
+                )
+                raise ApplicationHandlerStop
+
+            text_msg = (
+                "🔎 Пропущенные материалы\n\n"
+                "Нашёл незавершённые пункты:\n"
+                + "\n".join(pending)
+                + "\n\nНажми кнопку ниже, чтобы быстро перейти к нужному материалу."
+            )
+            buttons = []
+            if first_lesson_day is not None:
+                buttons.append(
+                    [
+                        InlineKeyboardButton(
+                            f"📚 Открыть незавершенную лекцию (день {first_lesson_day})",
+                            callback_data=f"{cb.REMINDER_NAV_PREFIX}lesson:{first_lesson_day}",
+                        )
+                    ]
+                )
+            if first_quest_day is not None:
+                buttons.append(
+                    [
+                        InlineKeyboardButton(
+                            f"📝 Открыть незавершенное задание (день {first_quest_day})",
+                            callback_data=f"{cb.REMINDER_NAV_PREFIX}quest:{first_quest_day}",
+                        )
+                    ]
+                )
+            if first_questionnaire is not None:
+                q_day, qid = first_questionnaire
+                buttons.append(
+                    [
+                        InlineKeyboardButton(
+                            f"📋 Открыть незавершенную анкету (день {q_day})",
+                            callback_data=f"{cb.REMINDER_NAV_PREFIX}questionnaire:{q_day}:{qid}",
+                        )
+                    ]
+                )
+            buttons.append(
+                [
+                    InlineKeyboardButton(
+                        "➡️ Продолжить по порядку",
+                        callback_data=cb.REMINDER_NAV_NEXT,
+                    )
+                ]
+            )
+
             await update.effective_message.reply_text(
-                f"✅ Ок! Jobs created: {created}. Подожди минуту.",
-                reply_markup=menus.kb_day(),
+                text_msg,
+                reply_markup=InlineKeyboardMarkup(buttons),
             )
             raise ApplicationHandlerStop
 
@@ -1801,6 +2100,12 @@ def register_user_handlers(app, settings: Settings, services: dict):
     app.add_handler(CallbackQueryHandler(consent_pick, pattern=r"^consent:(yes|no)$"))
     app.add_handler(CallbackQueryHandler(tz_pick, pattern=r"^tz:.*"))
     app.add_handler(CallbackQueryHandler(enroll_time_pick, pattern=r"^" + re.escape(cb.ENROLL_TIME_PREFIX)))
+    app.add_handler(
+        CallbackQueryHandler(
+            reminder_nav_pick,
+            pattern=r"^remnav:(next|lesson:\d+|quest:\d+|questionnaire:\d+:\d+)$",
+        )
+    )
     app.add_handler(CallbackQueryHandler(help_faq_pick, pattern=r"^help:(faq:\d+|faq:list|escalate)$"))
     app.add_handler(CallbackQueryHandler(admin_ticket_quick_pick, pattern=r"^admin_ticket:(open|reply):\d+$"))
 

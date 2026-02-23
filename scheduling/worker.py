@@ -6,23 +6,31 @@ from event_bus import callbacks as cb
 from questionnaires.questionnaire_handlers import q_buttons
 
 
-async def _get_bot_username(context: ContextTypes.DEFAULT_TYPE) -> str | None:
-    """Best-effort bot username for deep links."""
-    # python-telegram-bot caches Bot.get_me() internally, so this is cheap after first call
+def _save_material_message(
+    schedule,
+    user_id: int,
+    day_index: int,
+    kind: str,
+    message_id: int,
+    content_id: int = 0,
+):
+    """Best-effort save of sent message id for reminder navigation."""
+
+    if day_index <= 0 or message_id <= 0:
+        return
     try:
-        me = await context.bot.get_me()
-        if me and getattr(me, "username", None):
-            return me.username
+        repo = getattr(schedule, "material_messages", None)
+        if not repo:
+            return
+        repo.upsert(
+            user_id=user_id,
+            day_index=day_index,
+            kind=kind,
+            message_id=message_id,
+            content_id=content_id,
+        )
     except Exception:
         pass
-    return None
-
-
-async def _deep_link(context: ContextTypes.DEFAULT_TYPE, payload: str) -> str | None:
-    uname = await _get_bot_username(context)
-    if not uname:
-        return None
-    return f"https://t.me/{uname}?start={payload}"
 
 
 def _collect_pending_backlog(schedule, learning, qsvc, user_id: int, day_index: int):
@@ -31,6 +39,7 @@ def _collect_pending_backlog(schedule, learning, qsvc, user_id: int, day_index: 
     pending = []
     first_lesson_day = None
     first_quest_day = None
+    first_questionnaire = None
 
     for d in range(1, day_index + 1):
         lesson = schedule.lesson.get_by_day(d)
@@ -46,13 +55,18 @@ def _collect_pending_backlog(schedule, learning, qsvc, user_id: int, day_index: 
                 first_quest_day = d
 
         day_questionnaires = qsvc.list_for_day(d, qtypes=("manual", "daily"))
-        has_pending_questionnaire = any(
-            not qsvc.has_response(user_id, int(row["id"])) for row in day_questionnaires
-        )
-        if has_pending_questionnaire:
+        first_unanswered_qid = None
+        for row in day_questionnaires:
+            qid = int(row["id"])
+            if not qsvc.has_response(user_id, qid):
+                first_unanswered_qid = qid
+                break
+        if first_unanswered_qid is not None:
+            if first_questionnaire is None:
+                first_questionnaire = (d, first_unanswered_qid)
             pending.append(f"• 📋 День {d}: анкета — нет ответа")
 
-    return pending, first_lesson_day, first_quest_day
+    return pending, first_lesson_day, first_quest_day, first_questionnaire
 
 
 async def tick(context: ContextTypes.DEFAULT_TYPE, services: dict):
@@ -99,10 +113,17 @@ async def _process_outbox(context: ContextTypes.DEFAULT_TYPE, services: dict):
                     title = lesson.get("title") or f"День {day_index}"
                     desc = lesson.get("description") or ""
                     video = lesson.get("video_url") or ""
-                    text = f"📚 Лекция дня {day_index}\n*{title}*\n\n{desc}"
+                    text = f"📚 Лекция дня {day_index}\n{title}\n\n{desc}"
                     if video:
                         text += f"\n\n🎥 {video}"
-                    await context.bot.send_message(chat_id=user_id, text=text, parse_mode="Markdown", reply_markup=kb)
+                    msg = await context.bot.send_message(chat_id=user_id, text=text, reply_markup=kb)
+                    _save_material_message(
+                        schedule,
+                        user_id=user_id,
+                        day_index=day_index,
+                        kind="lesson",
+                        message_id=int(msg.message_id),
+                    )
 
                     user_tz = schedule._user_tz(user_id)
                     for_date = datetime.now(timezone.utc).astimezone(user_tz).date()
@@ -116,7 +137,14 @@ async def _process_outbox(context: ContextTypes.DEFAULT_TYPE, services: dict):
                     )
                     reply_cb = f"{cb.QUEST_REPLY_PREFIX}{day_index}"
                     kb = InlineKeyboardMarkup([[InlineKeyboardButton("✍️ Ответить на задание", callback_data=reply_cb)]])
-                    await context.bot.send_message(chat_id=user_id, text=qtext, reply_markup=kb)
+                    msg = await context.bot.send_message(chat_id=user_id, text=qtext, reply_markup=kb)
+                    _save_material_message(
+                        schedule,
+                        user_id=user_id,
+                        day_index=day_index,
+                        kind="quest",
+                        message_id=int(msg.message_id),
+                    )
                     learning.state.set_state(
                         user_id,
                         "last_quest",
@@ -144,10 +172,17 @@ async def _process_outbox(context: ContextTypes.DEFAULT_TYPE, services: dict):
                     title = lesson.get("title") or f"День {day_index}"
                     desc = lesson.get("description") or ""
                     video = lesson.get("video_url") or ""
-                    text = f"📚 Лекция дня {day_index}\n*{title}*\n\n{desc}"
+                    text = f"📚 Лекция дня {day_index}\n{title}\n\n{desc}"
                     if video:
                         text += f"\n\n🎥 {video}"
-                    await context.bot.send_message(chat_id=user_id, text=text, parse_mode="Markdown", reply_markup=kb)
+                    msg = await context.bot.send_message(chat_id=user_id, text=text, reply_markup=kb)
+                    _save_material_message(
+                        schedule,
+                        user_id=user_id,
+                        day_index=day_index,
+                        kind="lesson",
+                        message_id=int(msg.message_id),
+                    )
 
                     if for_date_s:
                         for_date = datetime.fromisoformat(for_date_s).date()
@@ -170,7 +205,14 @@ async def _process_outbox(context: ContextTypes.DEFAULT_TYPE, services: dict):
                     )
                     reply_cb = f"{cb.QUEST_REPLY_PREFIX}{day_index}"
                     kb = InlineKeyboardMarkup([[InlineKeyboardButton("✍️ Ответить на задание", callback_data=reply_cb)]])
-                    await context.bot.send_message(chat_id=user_id, text=qtext, reply_markup=kb)
+                    msg = await context.bot.send_message(chat_id=user_id, text=qtext, reply_markup=kb)
+                    _save_material_message(
+                        schedule,
+                        user_id=user_id,
+                        day_index=day_index,
+                        kind="quest",
+                        message_id=int(msg.message_id),
+                    )
                     learning.state.set_state(
                         user_id,
                         "last_quest",
@@ -196,7 +238,7 @@ async def _process_outbox(context: ContextTypes.DEFAULT_TYPE, services: dict):
                     outbox.mark_sent(job_id)
                     continue
 
-                pending, first_lesson_day, first_quest_day = _collect_pending_backlog(
+                pending, first_lesson_day, first_quest_day, first_questionnaire = _collect_pending_backlog(
                     schedule,
                     learning,
                     qsvc,
@@ -218,15 +260,42 @@ async def _process_outbox(context: ContextTypes.DEFAULT_TYPE, services: dict):
                 )
 
                 buttons = []
-                # Deep links back into the exact unfinished content
                 if first_lesson_day is not None:
-                    url = await _deep_link(context, f"gol_{first_lesson_day}")
-                    if url:
-                        buttons.append([InlineKeyboardButton("📚 Открыть первую незавершенную лекцию", url=url)])
+                    buttons.append(
+                        [
+                            InlineKeyboardButton(
+                                f"📚 Открыть незавершенную лекцию (день {first_lesson_day})",
+                                callback_data=f"{cb.REMINDER_NAV_PREFIX}lesson:{first_lesson_day}",
+                            )
+                        ]
+                    )
                 if first_quest_day is not None:
-                    url = await _deep_link(context, f"goq_{first_quest_day}")
-                    if url:
-                        buttons.append([InlineKeyboardButton("📝 Открыть первое незавершенное задание", url=url)])
+                    buttons.append(
+                        [
+                            InlineKeyboardButton(
+                                f"📝 Открыть незавершенное задание (день {first_quest_day})",
+                                callback_data=f"{cb.REMINDER_NAV_PREFIX}quest:{first_quest_day}",
+                            )
+                        ]
+                    )
+                if first_questionnaire is not None:
+                    q_day, qid = first_questionnaire
+                    buttons.append(
+                        [
+                            InlineKeyboardButton(
+                                f"📋 Открыть незавершенную анкету (день {q_day})",
+                                callback_data=f"{cb.REMINDER_NAV_PREFIX}questionnaire:{q_day}:{qid}",
+                            )
+                        ]
+                    )
+                buttons.append(
+                    [
+                        InlineKeyboardButton(
+                            "➡️ Продолжить по порядку",
+                            callback_data=cb.REMINDER_NAV_NEXT,
+                        )
+                    ]
+                )
 
                 reply_markup = InlineKeyboardMarkup(buttons) if buttons else None
                 await context.bot.send_message(chat_id=user_id, text=text, reply_markup=reply_markup)
@@ -245,10 +314,18 @@ async def _process_outbox(context: ContextTypes.DEFAULT_TYPE, services: dict):
                 if not item:
                     outbox.mark_sent(job_id)
                     continue
-                await context.bot.send_message(
+                msg = await context.bot.send_message(
                     chat_id=user_id,
                     text=f"📋 Анкета\n\n{item['question']}",
                     reply_markup=q_buttons(qid),
+                )
+                _save_material_message(
+                    schedule,
+                    user_id=user_id,
+                    day_index=day_index,
+                    kind="questionnaire",
+                    content_id=qid,
+                    message_id=int(msg.message_id),
                 )
                 if (not is_optional) and day_index and for_date:
                     q_content_type = schedule.questionnaire_content_type(qid)
