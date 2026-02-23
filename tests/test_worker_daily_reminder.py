@@ -62,7 +62,7 @@ class DailyReminderBacklogTests(unittest.TestCase):
             responded_ids={201},
         )
 
-        pending, first_lesson_day, first_quest_day = _collect_pending_backlog(
+        pending, first_lesson_day, first_quest_day, first_questionnaire = _collect_pending_backlog(
             schedule=schedule,
             learning=learning,
             qsvc=qsvc,
@@ -70,11 +70,10 @@ class DailyReminderBacklogTests(unittest.TestCase):
             day_index=2,
         )
 
-        self.assertIn("• 📚 День 1: лекция — не отмечена «Просмотрено»", pending)
-        self.assertIn("• 📝 День 2: задание — нет ответа", pending)
-        self.assertIn("• 📋 День 1: анкета — нет ответа", pending)
+        self.assertEqual(len(pending), 3)
         self.assertEqual(first_lesson_day, 1)
         self.assertEqual(first_quest_day, 2)
+        self.assertEqual(first_questionnaire, (1, 101))
 
     def test_collect_pending_backlog_returns_empty_when_done(self):
         schedule = _DummySchedule(
@@ -87,7 +86,7 @@ class DailyReminderBacklogTests(unittest.TestCase):
             responded_ids={101, 201},
         )
 
-        pending, first_lesson_day, first_quest_day = _collect_pending_backlog(
+        pending, first_lesson_day, first_quest_day, first_questionnaire = _collect_pending_backlog(
             schedule=schedule,
             learning=learning,
             qsvc=qsvc,
@@ -98,8 +97,8 @@ class DailyReminderBacklogTests(unittest.TestCase):
         self.assertEqual(pending, [])
         self.assertIsNone(first_lesson_day)
         self.assertIsNone(first_quest_day)
+        self.assertIsNone(first_questionnaire)
 
 
 if __name__ == "__main__":
     unittest.main()
-

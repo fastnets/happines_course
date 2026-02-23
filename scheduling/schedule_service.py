@@ -13,6 +13,9 @@ from entity.repositories.progress_repo import ProgressRepo
 from entity.repositories.deliveries_repo import DeliveriesRepo
 from entity.repositories.sent_jobs_repo import SentJobsRepo
 from entity.repositories.questionnaire_repo import QuestionnaireRepo
+from entity.repositories.material_messages_repo import MaterialMessagesRepo
+from entity.repositories.points_repo import PointsRepo
+from entity.repositories.answers_repo import AnswersRepo
 
 log = logging.getLogger("schedule")
 
@@ -36,6 +39,9 @@ class ScheduleService:
         self.deliveries = DeliveriesRepo(db)
         self.sent_jobs = SentJobsRepo(db)
         self.questionnaires = QuestionnaireRepo(db)
+        self.material_messages = MaterialMessagesRepo(db)
+        self.points = PointsRepo(db)
+        self.answers = AnswersRepo(db)
 
     # ----------------------------
     # Helpers
@@ -178,6 +184,41 @@ class ScheduleService:
         except Exception:
             return 0
 
+    def _has_any_pending_backlog(self, user_id: int, day_index: int) -> bool:
+        """Return True if user has any unfinished materials in days 1..day_index."""
+
+        points = getattr(self, "points", None)
+        answers = getattr(self, "answers", None)
+        questionnaires = getattr(self, "questionnaires", None)
+
+        for d in range(1, max(1, int(day_index)) + 1):
+            lesson = self.lesson.get_by_day(d)
+            if lesson:
+                viewed = False
+                if points and getattr(points, "has_entry", None):
+                    viewed = bool(points.has_entry(user_id, "lesson_viewed", f"day:{d}"))
+                if not viewed:
+                    return True
+
+            quest = self.quest.get_by_day(d)
+            if quest:
+                answered = False
+                if answers and getattr(answers, "exists_for_day", None):
+                    answered = bool(answers.exists_for_day(user_id, d))
+                if not answered:
+                    return True
+
+            if questionnaires and getattr(questionnaires, "list_by_day", None):
+                for qrow in questionnaires.list_by_day(d, qtypes=("manual", "daily")):
+                    qid = int(qrow["id"])
+                    has_response = False
+                    if getattr(questionnaires, "has_user_response", None):
+                        has_response = bool(questionnaires.has_user_response(user_id, qid))
+                    if not has_response:
+                        return True
+
+        return False
+
     @staticmethod
     def questionnaire_content_type(questionnaire_id: int) -> str:
         return f"questionnaire:{int(questionnaire_id)}"
@@ -251,14 +292,13 @@ class ScheduleService:
             q = self.quest.get_by_day(day_index)
             day_questionnaires = self.questionnaires.list_by_day(day_index, qtypes=("manual", "daily"))
 
-            if not lesson and not q and not day_questionnaires:
-                continue
+            has_day_content = bool(lesson or q or day_questionnaires)
 
             # Auto-delivery guardrail for lessons/quests: if we're too late for today's window, skip.
             too_late = (now_user > (delivery_local + timedelta(minutes=grace_min)))
             can_autosend = (not too_late) or (offset_days == 1)
 
-            if can_autosend:
+            if has_day_content and can_autosend:
                 # Lesson
                 if lesson and not self.sent_jobs.was_sent(user_id, "lesson", day_index, for_date):
                     lesson_id = int(lesson["id"])
@@ -323,8 +363,8 @@ class ScheduleService:
                     self.outbox.create_job(user_id, run_at_utc.isoformat(), payload)
                     created += 1
 
-            # Daily reminder: schedule regardless of grace window (can still remind if delivery missed)
-            if not self.sent_jobs.was_sent(user_id, "daily_reminder", day_index, for_date):
+            # Daily reminder: schedule by unfinished backlog, even if today's content is empty.
+            if (not self.sent_jobs.was_sent(user_id, "daily_reminder", day_index, for_date)) and self._has_any_pending_backlog(user_id, day_index):
                 reminder_local = self._compute_daily_reminder_run_local(delivery_local, user_tz)
                 run_utc = reminder_local.astimezone(timezone.utc)
                 job_key = f"daily_reminder:day={day_index}:date={for_date.isoformat()}"
