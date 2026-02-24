@@ -67,6 +67,31 @@ def register_learning_handlers(app, settings, services):
         await context.bot.send_message(chat_id=q.from_user.id, text=f"✅ Просмотрено! +{points} баллов")
         await _notify_achievements(q.from_user.id, context)
 
+    async def on_extra_viewed(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        q = update.callback_query
+        await q.answer()
+        payload = schedule.parse_extra_viewed_payload(q.data or "")
+        if not payload:
+            await q.edit_message_reply_markup(reply_markup=None)
+            return
+
+        material_id = int(payload["material_id"])
+        points = int(payload["points"])
+        source_key = f"extra:{material_id}"
+
+        if learning.points.has_entry(q.from_user.id, "extra_viewed", source_key):
+            await q.edit_message_reply_markup(reply_markup=None)
+            await context.bot.send_message(chat_id=q.from_user.id, text="✅ Уже засчитано.")
+            return
+
+        learning.points.add_points(q.from_user.id, "extra_viewed", source_key, points)
+        await q.edit_message_reply_markup(reply_markup=None)
+        if points > 0:
+            await context.bot.send_message(chat_id=q.from_user.id, text=f"✅ Просмотрено! +{points} баллов")
+            await _notify_achievements(q.from_user.id, context)
+        else:
+            await context.bot.send_message(chat_id=q.from_user.id, text="✅ Просмотрено.")
+
     # ----------------------------
     # Quest reply button
     # ----------------------------
@@ -276,6 +301,7 @@ def register_learning_handlers(app, settings, services):
     # Handlers
     # ----------------------------
     app.add_handler(CallbackQueryHandler(on_viewed, pattern=f"^{cb.LESSON_VIEWED}"))
+    app.add_handler(CallbackQueryHandler(on_extra_viewed, pattern=f"^{cb.EXTRA_VIEWED}"))
     app.add_handler(CallbackQueryHandler(on_quest_reply, pattern=f"^{cb.QUEST_REPLY_PREFIX}"))
     app.add_handler(CommandHandler("answer", answer_cmd))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_plain_text), group=5)

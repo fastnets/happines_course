@@ -7,6 +7,7 @@ from zoneinfo import ZoneInfo
 from entity.repositories.enrollment_repo import EnrollmentRepo
 from entity.repositories.lesson_repo import LessonRepo
 from entity.repositories.quest_repo import QuestRepo
+from entity.repositories.extra_material_repo import ExtraMaterialRepo
 from entity.repositories.outbox_repo import OutboxRepo
 from entity.repositories.users_repo import UsersRepo
 from entity.repositories.progress_repo import ProgressRepo
@@ -33,6 +34,7 @@ class ScheduleService:
         self.enroll = EnrollmentRepo(db)
         self.lesson = LessonRepo(db)
         self.quest = QuestRepo(db)
+        self.extra = ExtraMaterialRepo(db)
         self.outbox = OutboxRepo(db)
         self.users = UsersRepo(db)
         self.progress = ProgressRepo(db)
@@ -133,7 +135,7 @@ class ScheduleService:
         # Cancel only daily pipeline kinds.
         cancelled = self.outbox.cancel_future_jobs(
             user_id,
-            kinds=["day_lesson", "day_quest", "daily_reminder"],
+            kinds=["day_lesson", "day_quest", "day_extra", "daily_reminder"],
             from_utc_iso=now_utc.isoformat(),
         )
         # Regular questionnaires use kind=questionnaire_broadcast as well,
@@ -241,6 +243,9 @@ class ScheduleService:
     def make_viewed_cb(self, day_index: int, points: int) -> str:
         return f"lesson:viewed:day={day_index}:p={points}"
 
+    def make_extra_viewed_cb(self, material_id: int, points: int) -> str:
+        return f"extra:viewed:id={material_id}:p={points}"
+
     def parse_viewed_payload(self, data: str):
         if not data.startswith("lesson:viewed:"):
             return None
@@ -249,6 +254,17 @@ class ScheduleService:
             day = int(parts[2].split("=")[1])
             pts = int(parts[3].split("=")[1])
             return {"day_index": day, "points": pts}
+        except Exception:
+            return None
+
+    def parse_extra_viewed_payload(self, data: str):
+        if not data.startswith("extra:viewed:"):
+            return None
+        try:
+            parts = data.split(":")
+            material_id = int(parts[2].split("=")[1])
+            pts = int(parts[3].split("=")[1])
+            return {"material_id": material_id, "points": pts}
         except Exception:
             return None
 
@@ -290,9 +306,11 @@ class ScheduleService:
 
             lesson = self.lesson.get_by_day(day_index)
             q = self.quest.get_by_day(day_index)
+            extra = getattr(self, "extra", None)
+            x = extra.get_by_day(day_index) if extra else None
             day_questionnaires = self.questionnaires.list_by_day(day_index, qtypes=("manual", "daily"))
 
-            has_day_content = bool(lesson or q or day_questionnaires)
+            has_day_content = bool(lesson or q or x or day_questionnaires)
 
             # Auto-delivery guardrail for lessons/quests: if we're too late for today's window, skip.
             too_late = (now_user > (delivery_local + timedelta(minutes=grace_min)))
@@ -363,6 +381,29 @@ class ScheduleService:
                     self.outbox.create_job(user_id, run_at_utc.isoformat(), payload)
                     created += 1
 
+                # Extra material (non-mandatory, out of reminder flow).
+                if x and bool(x.get("is_active")) and not self.sent_jobs.was_sent(user_id, "extra", day_index, for_date):
+                    extra_id = int(x["id"])
+                    x_ver = self._row_version_ts(x)
+                    x_key = f"extra:{extra_id}:day={day_index}:v:{x_ver}"
+                    if not self.outbox.exists_job_for(user_id, x_key):
+                        payload = {
+                            "kind": "day_extra",
+                            "job_key": x_key,
+                            "day_index": day_index,
+                            "for_date": for_date.isoformat(),
+                            "extra": {
+                                "id": extra_id,
+                                "content_text": x.get("content_text") or "",
+                                "points": int(x.get("points") or 0),
+                                "link_url": x.get("link_url"),
+                                "photo_file_id": x.get("photo_file_id"),
+                            },
+                        }
+                        self._log_job(user_id, "day_extra", x_key, user_tz, for_date, delivery_hhmm, run_at_utc)
+                        self.outbox.create_job(user_id, run_at_utc.isoformat(), payload)
+                        created += 1
+
             # Daily reminder: schedule by unfinished backlog, even if today's content is empty.
             if (not self.sent_jobs.was_sent(user_id, "daily_reminder", day_index, for_date)) and self._has_any_pending_backlog(user_id, day_index):
                 reminder_local = self._compute_daily_reminder_run_local(delivery_local, user_tz)
@@ -396,8 +437,10 @@ class ScheduleService:
 
         lesson = self.lesson.get_by_day(day_index)
         q = self.quest.get_by_day(day_index)
+        extra = getattr(self, "extra", None)
+        x = extra.get_by_day(day_index) if extra else None
         day_questionnaires = self.questionnaires.list_by_day(day_index, qtypes=("manual", "daily"))
-        if not lesson and not q and not day_questionnaires:
+        if not lesson and not q and not x and not day_questionnaires:
             return 0
 
         created = 0
@@ -438,6 +481,26 @@ class ScheduleService:
                         "prompt": q["prompt"],
                         "points": q["points"],
                         "photo_file_id": q.get("photo_file_id"),
+                    },
+                }
+                self.outbox.create_job(user_id, run_utc, payload)
+                created += 1
+
+        if x and bool(x.get("is_active")):
+            extra_id = int(x["id"])
+            x_ver = self._row_version_ts(x)
+            x_key = f"extra:{extra_id}:day={day_index}:v:{x_ver}"
+            if not self.outbox.exists_job_for(user_id, x_key):
+                payload = {
+                    "kind": "day_extra",
+                    "job_key": x_key,
+                    "day_index": day_index,
+                    "extra": {
+                        "id": extra_id,
+                        "content_text": x.get("content_text") or "",
+                        "points": int(x.get("points") or 0),
+                        "link_url": x.get("link_url"),
+                        "photo_file_id": x.get("photo_file_id"),
                     },
                 }
                 self.outbox.create_job(user_id, run_utc, payload)

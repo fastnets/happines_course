@@ -35,6 +35,21 @@ class DummyQuestionnairesByDay:
         return False
 
 
+class DummyExtraRepo:
+    def get_by_day(self, day_index: int):
+        if day_index == 1:
+            return {
+                "id": 901,
+                "day_index": 1,
+                "content_text": "Доп. материал",
+                "points": 2,
+                "link_url": "https://example.com",
+                "photo_file_id": "file_abc",
+                "is_active": True,
+            }
+        return None
+
+
 class DummySentJobs:
     def __init__(self):
         self.calls = []
@@ -82,6 +97,15 @@ class ScheduleServiceTests(unittest.TestCase):
         self.assertEqual(svc.parse_viewed_payload(data), {"day_index": 4, "points": 9})
         self.assertIsNone(svc.parse_viewed_payload("lesson:viewed:broken"))
         self.assertIsNone(svc.parse_viewed_payload("other:data"))
+
+    def test_extra_viewed_callback_roundtrip(self):
+        svc = ScheduleService.__new__(ScheduleService)
+
+        data = svc.make_extra_viewed_cb(material_id=55, points=3)
+        self.assertEqual(data, "extra:viewed:id=55:p=3")
+        self.assertEqual(svc.parse_extra_viewed_payload(data), {"material_id": 55, "points": 3})
+        self.assertIsNone(svc.parse_extra_viewed_payload("extra:viewed:broken"))
+        self.assertIsNone(svc.parse_extra_viewed_payload("other:data"))
 
     def test_questionnaire_broadcast_skips_existing_jobs(self):
         svc = ScheduleService.__new__(ScheduleService)
@@ -179,6 +203,38 @@ class ScheduleServiceTests(unittest.TestCase):
         self.assertGreaterEqual(created, 1)
         self.assertGreaterEqual(len(reminder_payloads), 1)
         self.assertEqual(reminder_payloads[0]["day_index"], 3)
+
+    def test_schedules_extra_material_for_day(self):
+        svc = ScheduleService.__new__(ScheduleService)
+        svc.settings = type("S", (), {"delivery_grace_minutes": 15})()
+        svc.lesson = type("L", (), {"get_by_day": staticmethod(lambda _day: None)})()
+        svc.quest = type("Q", (), {"get_by_day": staticmethod(lambda _day: None)})()
+        svc.extra = DummyExtraRepo()
+        svc.questionnaires = type(
+            "QQ",
+            (),
+            {"list_by_day": staticmethod(lambda _day, qtypes=("manual", "daily"): [])},
+        )()
+        svc.sent_jobs = DummySentJobsNever()
+        svc.outbox = DummyOutbox()
+        svc._user_tz = lambda _uid: ZoneInfo("UTC")
+        svc._log_job = lambda *args, **kwargs: None
+        base_date = date(2026, 2, 23)
+        svc.day_index_for_local_date = lambda _uid, d: 1 if d == base_date else 2
+
+        created = svc._schedule_for_user(
+            user_id=951667241,
+            now_utc=datetime(2026, 2, 23, 10, 0, tzinfo=timezone.utc),
+            enrollment_row={"user_id": 951667241, "delivery_time": "21:00"},
+        )
+
+        extra_payloads = [row[2] for row in svc.outbox.created if row[2].get("kind") == "day_extra"]
+        self.assertGreaterEqual(created, 1)
+        self.assertEqual(len(extra_payloads), 1)
+        p = extra_payloads[0]
+        self.assertEqual(p["day_index"], 1)
+        self.assertEqual(int(p["extra"]["id"]), 901)
+        self.assertEqual(int(p["extra"]["points"]), 2)
 
 
 if __name__ == "__main__":

@@ -61,8 +61,9 @@ def kb_yes_no():
 def kb_admin_home(is_owner: bool = False):
     rows = [
         [KeyboardButton(texts.ADMIN_LESSONS), KeyboardButton(texts.ADMIN_QUESTS)],
-        [KeyboardButton(texts.ADMIN_QUESTIONNAIRES), KeyboardButton(texts.ADMIN_ANALYTICS)],
-        [KeyboardButton(texts.ADMIN_ACHIEVEMENTS), KeyboardButton(texts.ADMIN_TICKETS)],
+        [KeyboardButton(texts.ADMIN_EXTRA), KeyboardButton(texts.ADMIN_QUESTIONNAIRES)],
+        [KeyboardButton(texts.ADMIN_ANALYTICS), KeyboardButton(texts.ADMIN_ACHIEVEMENTS)],
+        [KeyboardButton(texts.ADMIN_TICKETS)],
     ]
     if is_owner:
         rows.append([KeyboardButton(texts.ADMIN_ADMINS)])
@@ -138,6 +139,7 @@ def register_admin_handlers(app, settings: Settings, services: dict):
     schedule = services["schedule"]
     lesson_repo = schedule.lesson
     quest_repo = schedule.quest
+    extra_repo = getattr(schedule, "extra", None)
 
     # ----------------------------
     # Navigation helpers
@@ -169,6 +171,11 @@ def register_admin_handlers(app, settings: Settings, services: dict):
         uid = update.effective_user.id
         _set_menu(uid, "quests")
         await update.effective_message.reply_text("📝 Задания", reply_markup=kb_admin_actions(False))
+
+    async def _show_extras_menu(update: Update):
+        uid = update.effective_user.id
+        _set_menu(uid, "extra")
+        await update.effective_message.reply_text("🧩 Доп. материалы", reply_markup=kb_admin_actions(False))
 
     async def _show_q_menu(update: Update):
         uid = update.effective_user.id
@@ -690,6 +697,53 @@ def register_admin_handlers(app, settings: Settings, services: dict):
         state.set_state(uid, ADMIN_WIZARD_STEP, {"mode": "qst_delete_day"})
         await update.effective_message.reply_text("🗑 Удаление задания\n\nВведи номер дня (целое число), например: 1")
 
+    async def extras_list(update: Update):
+        if not extra_repo:
+            await update.effective_message.reply_text("⚠️ Репозиторий доп. материалов не подключён.", reply_markup=kb_admin_actions(False))
+            return
+        items = extra_repo.list_latest(200)
+        if not items:
+            await update.effective_message.reply_text("🧩 Доп. материалы: пока пусто.", reply_markup=kb_admin_actions(False))
+            return
+        lines = ["🧩 Доп. материалы (день → баллы)"]
+        for it in items:
+            txt = (it.get("content_text") or "").replace("\n", " ")
+            if len(txt) > 60:
+                txt = txt[:57] + "..."
+            pts = int(it.get("points") or 0)
+            flags = []
+            if it.get("link_url"):
+                flags.append("link")
+            if it.get("photo_file_id"):
+                flags.append("photo")
+            flags_s = f" ({', '.join(flags)})" if flags else ""
+            lines.append(f"• день {it['day_index']} — +{pts} балл(ов){flags_s} — {txt}")
+        await update.effective_message.reply_text("\n".join(lines), reply_markup=kb_admin_actions(False))
+
+    async def extras_create(update: Update):
+        if not extra_repo:
+            await update.effective_message.reply_text("⚠️ Репозиторий доп. материалов не подключён.")
+            return
+        uid = update.effective_user.id
+        state.set_state(uid, ADMIN_WIZARD_STEP, {"mode": "ext_create_day"})
+        await update.effective_message.reply_text("➕ Создание доп. материала\n\nВведи номер дня (целое число), например: 1")
+
+    async def extras_edit(update: Update):
+        if not extra_repo:
+            await update.effective_message.reply_text("⚠️ Репозиторий доп. материалов не подключён.")
+            return
+        uid = update.effective_user.id
+        state.set_state(uid, ADMIN_WIZARD_STEP, {"mode": "ext_edit_day"})
+        await update.effective_message.reply_text("✏️ Редактирование доп. материала\n\nВведи номер дня (целое число), например: 1")
+
+    async def extras_delete(update: Update):
+        if not extra_repo:
+            await update.effective_message.reply_text("⚠️ Репозиторий доп. материалов не подключён.")
+            return
+        uid = update.effective_user.id
+        state.set_state(uid, ADMIN_WIZARD_STEP, {"mode": "ext_delete_day"})
+        await update.effective_message.reply_text("🗑 Удаление доп. материала\n\nВведи номер дня (целое число), например: 1")
+
     async def q_list(update: Update):
         items = qsvc.list_latest(50)
         if not items:
@@ -823,7 +877,7 @@ def register_admin_handlers(app, settings: Settings, services: dict):
         if text == texts.BTN_BACK:
             screen0 = (screen or "home").lower()
 
-            if screen0 in ("lessons", "quests", "questionnaires", "analytics", "achievements", "tickets", "admins"):
+            if screen0 in ("lessons", "quests", "extra", "questionnaires", "analytics", "achievements", "tickets", "admins"):
                 await _show_admin_home(update)
                 raise ApplicationHandlerStop
 
@@ -837,6 +891,8 @@ def register_admin_handlers(app, settings: Settings, services: dict):
                 await _show_lessons_menu(update); raise ApplicationHandlerStop
             if text == texts.ADMIN_QUESTS:
                 await _show_quests_menu(update); raise ApplicationHandlerStop
+            if text == texts.ADMIN_EXTRA:
+                await _show_extras_menu(update); raise ApplicationHandlerStop
             if text == texts.ADMIN_QUESTIONNAIRES:
                 await _show_q_menu(update); raise ApplicationHandlerStop
             if text == texts.ADMIN_ANALYTICS:
@@ -887,6 +943,12 @@ def register_admin_handlers(app, settings: Settings, services: dict):
             if text == BTN_CREATE: await quests_create(update); raise ApplicationHandlerStop
             if text == BTN_EDIT: await quests_edit(update); raise ApplicationHandlerStop
             if text == BTN_DELETE: await quests_delete(update); raise ApplicationHandlerStop
+
+        if screen == "extra":
+            if text == BTN_LIST: await extras_list(update); raise ApplicationHandlerStop
+            if text == BTN_CREATE: await extras_create(update); raise ApplicationHandlerStop
+            if text == BTN_EDIT: await extras_edit(update); raise ApplicationHandlerStop
+            if text == BTN_DELETE: await extras_delete(update); raise ApplicationHandlerStop
 
         if screen == "questionnaires":
             if text == BTN_LIST: await q_list(update); raise ApplicationHandlerStop
@@ -995,6 +1057,10 @@ def register_admin_handlers(app, settings: Settings, services: dict):
             state.clear_state(uid)
             await _show_quests_menu(update)
             raise ApplicationHandlerStop
+        if text == texts.ADMIN_EXTRA:
+            state.clear_state(uid)
+            await _show_extras_menu(update)
+            raise ApplicationHandlerStop
         if text == texts.ADMIN_QUESTIONNAIRES:
             state.clear_state(uid)
             await _show_q_menu(update)
@@ -1036,6 +1102,8 @@ def register_admin_handlers(app, settings: Settings, services: dict):
                 await _show_lessons_menu(update)
             elif mode0.startswith("qst_"):
                 await _show_quests_menu(update)
+            elif mode0.startswith("ext_"):
+                await _show_extras_menu(update)
             elif mode0.startswith("q_") or mode0.startswith("qcast_"):
                 await _show_q_menu(update)
             elif mode0.startswith("a_"):
@@ -1075,6 +1143,16 @@ def register_admin_handlers(app, settings: Settings, services: dict):
                 await quests_edit(update); raise ApplicationHandlerStop
             if text == BTN_DELETE:
                 await quests_delete(update); raise ApplicationHandlerStop
+
+        if mode_s.startswith("ext_"):
+            if text == BTN_LIST:
+                state.clear_state(uid); await _show_extras_menu(update); await extras_list(update); raise ApplicationHandlerStop
+            if text == BTN_CREATE:
+                await extras_create(update); raise ApplicationHandlerStop
+            if text == BTN_EDIT:
+                await extras_edit(update); raise ApplicationHandlerStop
+            if text == BTN_DELETE:
+                await extras_delete(update); raise ApplicationHandlerStop
 
         if mode_s.startswith("q_") or mode_s.startswith("qcast_"):
             if text == BTN_LIST:
@@ -1238,6 +1316,79 @@ def register_admin_handlers(app, settings: Settings, services: dict):
                 raise ApplicationHandlerStop
             state.clear_state(update.effective_user.id)
             await _show_quests_menu(update)
+            await update.effective_message.reply_text("✅ Сохранено.")
+            return
+
+        # --- Extra materials wizard ---
+        if mode in ("ext_create_day", "ext_edit_day", "ext_delete_day"):
+            if not extra_repo:
+                await update.effective_message.reply_text("⚠️ Репозиторий доп. материалов не подключён."); raise ApplicationHandlerStop
+            if not re.match(r"^\d+$", text):
+                await update.effective_message.reply_text("Нужен номер дня (число)."); raise ApplicationHandlerStop
+            day = int(text)
+            if mode == "ext_delete_day":
+                ok = extra_repo.delete_day(day)
+                state.clear_state(update.effective_user.id)
+                await _show_extras_menu(update)
+                await update.effective_message.reply_text("✅ Удалено" if ok else "⚠️ Не найдено")
+                return
+            existing = extra_repo.get_by_day(day)
+            payload = {"mode": "ext_text", "day_index": day}
+            state.set_state(update.effective_user.id, ADMIN_WIZARD_STEP, payload)
+            await update.effective_message.reply_text(
+                f"День {day}. Введи текст доп. материала."
+                + (f"\nТекущее: {(existing.get('content_text') or '')[:200]}" if existing else "")
+            )
+            return
+
+        if mode == "ext_text":
+            payload["content_text"] = text
+            payload["mode"] = "ext_link"
+            state.set_state(update.effective_user.id, ADMIN_WIZARD_STEP, payload)
+            await update.effective_message.reply_text("Вставь ссылку (http/https) или отправь '-' если без ссылки.")
+            return
+
+        if mode == "ext_link":
+            if text == "-":
+                payload["link_url"] = None
+            elif text.startswith("http://") or text.startswith("https://"):
+                payload["link_url"] = text
+            else:
+                await update.effective_message.reply_text("Нужна ссылка http/https или '-' для пустого значения.")
+                raise ApplicationHandlerStop
+            payload["mode"] = "ext_photo"
+            state.set_state(update.effective_user.id, ADMIN_WIZARD_STEP, payload)
+            await update.effective_message.reply_text("Прикрепи фото или отправь '-' если без фото.")
+            return
+
+        if mode == "ext_photo":
+            if text == "-":
+                payload["photo_file_id"] = None
+                payload["mode"] = "ext_points"
+                state.set_state(update.effective_user.id, ADMIN_WIZARD_STEP, payload)
+                await update.effective_message.reply_text("Сколько баллов за просмотр? (целое число, можно 0)")
+                return
+            await update.effective_message.reply_text("Нужна фотография или символ '-' для варианта без фото.")
+            return
+
+        if mode == "ext_points":
+            if not re.match(r"^\d+$", text):
+                await update.effective_message.reply_text("Нужно целое число, например: 0"); raise ApplicationHandlerStop
+            day = int(payload["day_index"])
+            try:
+                extra_repo.upsert(
+                    day_index=day,
+                    content_text=payload["content_text"],
+                    points=int(text),
+                    link_url=payload.get("link_url"),
+                    photo_file_id=payload.get("photo_file_id"),
+                    is_active=True,
+                )
+            except Exception:
+                await update.effective_message.reply_text("⚠️ Упс, ошибка. Попробуй ещё раз.")
+                raise ApplicationHandlerStop
+            state.clear_state(update.effective_user.id)
+            await _show_extras_menu(update)
             await update.effective_message.reply_text("✅ Сохранено.")
             return
 
@@ -1848,7 +1999,7 @@ def register_admin_handlers(app, settings: Settings, services: dict):
         if isinstance(payload, str):
             payload = json.loads(payload)
         mode = payload.get("mode")
-        if mode != "qst_photo":
+        if mode not in ("qst_photo", "ext_photo"):
             return
 
         photos = update.effective_message.photo or []
@@ -1857,9 +2008,12 @@ def register_admin_handlers(app, settings: Settings, services: dict):
             raise ApplicationHandlerStop
 
         payload["photo_file_id"] = photos[-1].file_id
-        payload["mode"] = "qst_points"
+        payload["mode"] = "qst_points" if mode == "qst_photo" else "ext_points"
         state.set_state(uid, ADMIN_WIZARD_STEP, payload)
-        await update.effective_message.reply_text("Фото принято. Сколько баллов за ответ на задание? (целое число)")
+        if mode == "qst_photo":
+            await update.effective_message.reply_text("Фото принято. Сколько баллов за ответ на задание? (целое число)")
+        else:
+            await update.effective_message.reply_text("Фото принято. Сколько баллов за просмотр? (целое число, можно 0)")
         raise ApplicationHandlerStop
 
     # ----------------------------

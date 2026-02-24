@@ -89,6 +89,25 @@ async def _send_quest_message(bot, user_id: int, day_index: int, quest: dict, kb
     return await bot.send_message(chat_id=user_id, text=qtext, reply_markup=kb)
 
 
+async def _send_extra_message(bot, user_id: int, day_index: int, extra: dict, kb):
+    text = f"🧩 Дополнительный материал дня {day_index}\n\n{extra.get('content_text') or ''}".strip()
+    link_url = (extra.get("link_url") or "").strip()
+    if link_url:
+        text += f"\n\n🔗 {link_url}"
+    photo_file_id = extra.get("photo_file_id")
+    if photo_file_id:
+        try:
+            return await bot.send_photo(
+                chat_id=user_id,
+                photo=photo_file_id,
+                caption=text,
+                reply_markup=kb,
+            )
+        except Exception:
+            pass
+    return await bot.send_message(chat_id=user_id, text=text, reply_markup=kb)
+
+
 async def tick(context: ContextTypes.DEFAULT_TYPE, services: dict):
     # Create new outbox jobs (lessons/quests + daily reminder) and then deliver due ones
     services["schedule"].schedule_due_jobs()
@@ -239,6 +258,30 @@ async def _process_outbox(context: ContextTypes.DEFAULT_TYPE, services: dict):
                         for_date = datetime.now(timezone.utc).astimezone(user_tz).date()
                     schedule.sent_jobs.mark_sent(user_id, "quest", day_index, for_date)
                     schedule.deliveries.mark_sent(user_id, day_index, "quest")
+                outbox.mark_sent(job_id)
+                continue
+
+            if kind == "day_extra":
+                day_index = int(payload["day_index"])
+                for_date_s = payload.get("for_date")
+                extra = payload.get("extra")
+                if extra:
+                    extra_id = int(extra.get("id") or 0)
+                    points = int(extra.get("points") or 0)
+                    kb = None
+                    if extra_id > 0:
+                        viewed_cb = schedule.make_extra_viewed_cb(extra_id, points)
+                        kb = InlineKeyboardMarkup([[InlineKeyboardButton("Просмотрено", callback_data=viewed_cb)]])
+
+                    msg = await _send_extra_message(context.bot, user_id, day_index, extra, kb)
+
+                    if for_date_s:
+                        for_date = datetime.fromisoformat(for_date_s).date()
+                    else:
+                        user_tz = schedule._user_tz(user_id)
+                        for_date = datetime.now(timezone.utc).astimezone(user_tz).date()
+                    schedule.sent_jobs.mark_sent(user_id, "extra", day_index, for_date)
+                    schedule.deliveries.mark_sent(user_id, day_index, "extra")
                 outbox.mark_sent(job_id)
                 continue
 

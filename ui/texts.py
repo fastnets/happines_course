@@ -55,6 +55,7 @@ REMINDER_EDIT_DATETIME = "Дата и время"
 # Admin menus
 ADMIN_LESSONS = "📚 Лекции"
 ADMIN_QUESTS = "📝 Задания"
+ADMIN_EXTRA = "🧩 Доп. материалы"
 ADMIN_QUESTIONNAIRES = "📋 Анкеты"
 ADMIN_ANALYTICS = "📈 Аналитика"
 ADMIN_TICKETS = "🆘 Тикеты"
@@ -76,6 +77,7 @@ ADMIN_TEXTS = {
     MENU_ADMIN,
     ADMIN_LESSONS,
     ADMIN_QUESTS,
+    ADMIN_EXTRA,
     ADMIN_QUESTIONNAIRES,
     ADMIN_ANALYTICS,
     ADMIN_TICKETS,

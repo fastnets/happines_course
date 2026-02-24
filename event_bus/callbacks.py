@@ -11,6 +11,7 @@ SETTINGS_BACK = "settings:back"
 ENROLL_TIME_PREFIX = "enroll:time:"
 DAY_GET_NOW = "day:get_now"
 LESSON_VIEWED = "lesson:viewed"
+EXTRA_VIEWED = "extra:viewed"
 
 ADMIN_HOME = "admin:home"
 ADMIN_LIBRARY = "admin:library"

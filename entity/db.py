@@ -54,6 +54,21 @@ CREATE TABLE IF NOT EXISTS quests (
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
+CREATE TABLE IF NOT EXISTS extra_materials (
+  id SERIAL PRIMARY KEY,
+  day_index INT NOT NULL UNIQUE,
+  content_text TEXT NOT NULL,
+  points INT NOT NULL DEFAULT 0,
+  link_url TEXT,
+  photo_file_id TEXT,
+  is_active BOOLEAN NOT NULL DEFAULT TRUE,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_extra_materials_active_day
+ON extra_materials(is_active, day_index);
+
 CREATE TABLE IF NOT EXISTS progress (
   id SERIAL PRIMARY KEY,
   user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -287,6 +302,17 @@ MIGRATIONS_SQL = [
     "ALTER TABLE users ADD COLUMN IF NOT EXISTS pd_consent_at TIMESTAMPTZ",
     "ALTER TABLE users ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()",
     "ALTER TABLE quests ADD COLUMN IF NOT EXISTS photo_file_id TEXT",
+    # Extra materials
+    "CREATE TABLE IF NOT EXISTS extra_materials (id SERIAL PRIMARY KEY, day_index INT NOT NULL UNIQUE, content_text TEXT NOT NULL, points INT NOT NULL DEFAULT 0, link_url TEXT, photo_file_id TEXT, is_active BOOLEAN NOT NULL DEFAULT TRUE, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW())",
+    "ALTER TABLE extra_materials ADD COLUMN IF NOT EXISTS content_text TEXT",
+    "ALTER TABLE extra_materials ADD COLUMN IF NOT EXISTS points INT NOT NULL DEFAULT 0",
+    "ALTER TABLE extra_materials ADD COLUMN IF NOT EXISTS link_url TEXT",
+    "ALTER TABLE extra_materials ADD COLUMN IF NOT EXISTS photo_file_id TEXT",
+    "ALTER TABLE extra_materials ADD COLUMN IF NOT EXISTS is_active BOOLEAN NOT NULL DEFAULT TRUE",
+    "ALTER TABLE extra_materials ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()",
+    "ALTER TABLE extra_materials ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()",
+    "CREATE UNIQUE INDEX IF NOT EXISTS idx_extra_materials_day_uniq ON extra_materials(day_index)",
+    "CREATE INDEX IF NOT EXISTS idx_extra_materials_active_day ON extra_materials(is_active, day_index)",
     "ALTER TABLE outbox_jobs ADD COLUMN IF NOT EXISTS attempts INT NOT NULL DEFAULT 0",
     "ALTER TABLE outbox_jobs ADD COLUMN IF NOT EXISTS last_error TEXT",
     "CREATE TABLE IF NOT EXISTS admins (user_id BIGINT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE, role TEXT NOT NULL DEFAULT 'admin', created_at TIMESTAMPTZ NOT NULL DEFAULT NOW())",
