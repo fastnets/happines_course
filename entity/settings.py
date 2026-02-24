@@ -26,6 +26,7 @@ class Settings:
     db_password: str
     owner_tg_id: int | None
     admin_tg_ids: list[int]
+    admin_events_chat_id: int | None
     default_timezone: str
     delivery_grace_minutes: int
     remind_after_hours: int
@@ -48,6 +49,7 @@ def get_settings() -> Settings:
         db_password=os.getenv("DB_PASSWORD", "postgres"),
         owner_tg_id=_opt_int(os.getenv("OWNER_TG_ID", "")),
         admin_tg_ids=_csv_ints(os.getenv("ADMIN_TG_IDS", "")),
+        admin_events_chat_id=_opt_int(os.getenv("ADMIN_EVENTS_CHAT_ID", "")),
         default_timezone=os.getenv("DEFAULT_TIMEZONE", "Europe/Moscow"),
         delivery_grace_minutes=int(os.getenv("DELIVERY_GRACE_MINUTES", "15")),
         remind_after_hours=int(os.getenv("REMIND_AFTER_HOURS", "12")),

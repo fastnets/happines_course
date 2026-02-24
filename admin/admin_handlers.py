@@ -2,7 +2,13 @@ import re
 import json
 import logging
 from datetime import datetime
-from telegram import Update, ReplyKeyboardMarkup, KeyboardButton
+from telegram import (
+    Update,
+    ReplyKeyboardMarkup,
+    KeyboardButton,
+    InlineKeyboardMarkup,
+    InlineKeyboardButton,
+)
 from telegram.ext import ContextTypes, MessageHandler, filters, CommandHandler, ApplicationHandlerStop
 
 from entity.settings import Settings
@@ -40,6 +46,7 @@ BTN_T_OPEN = "🟡 Open"
 BTN_T_VIEW = "🔎 Открыть по ID"
 BTN_T_REPLY = "💬 Ответить"
 BTN_T_CLOSE = "✅ Закрыть"
+BTN_JOIN_EVENTS_CHAT = "Вступить в группу с уведомлениями об изменениях в курсе"
 
 
 def _extract_quest_points(item: dict) -> int:
@@ -253,6 +260,55 @@ def register_admin_handlers(app, settings: Settings, services: dict):
             await context.bot.send_message(chat_id=int(admin_events_chat_id), text=msg)
         except Exception:
             log.exception("Failed to send admin event")
+
+    async def _send_events_chat_invite_to_admin(
+        context: ContextTypes.DEFAULT_TYPE,
+        *,
+        target_uid: int,
+        granted_role: str,
+    ) -> str:
+        if not admin_events_chat_id:
+            return "⚠️ Не отправил ссылку: ADMIN_EVENTS_CHAT_ID не настроен."
+        chat_id = int(admin_events_chat_id)
+        uid = int(target_uid)
+        role = _admin_role_label(granted_role)
+
+        try:
+            member = await context.bot.get_chat_member(chat_id=chat_id, user_id=uid)
+            if str(getattr(member, "status", "")).lower() in ("member", "administrator", "creator"):
+                return "ℹ️ Пользователь уже состоит в группе уведомлений."
+        except Exception:
+            # Can't determine membership reliably — continue with invite creation.
+            pass
+
+        try:
+            invite = await context.bot.create_chat_invite_link(
+                chat_id=chat_id,
+                name=f"admin-{uid}-{datetime.now().strftime('%Y%m%d%H%M%S')}",
+            )
+        except Exception:
+            log.exception("Failed to create admin events invite link")
+            return "⚠️ Не смог создать invite-ссылку в группу уведомлений."
+
+        try:
+            markup = InlineKeyboardMarkup(
+                [[InlineKeyboardButton(BTN_JOIN_EVENTS_CHAT, url=str(invite.invite_link))]]
+            )
+            await context.bot.send_message(
+                chat_id=uid,
+                text=(
+                    f"✅ Тебе выдана роль {role}.\n"
+                    "Нажми кнопку ниже, чтобы вступить в группу с уведомлениями."
+                ),
+                reply_markup=markup,
+            )
+            return "✅ Инвайт-ссылка в группу уведомлений отправлена пользователю в ЛС."
+        except Exception:
+            log.exception("Failed to send admin events invite to user")
+            return (
+                "⚠️ Роль выдана, но не смог отправить ссылку в ЛС. "
+                "Пусть пользователь откроет бота и нажмёт /start."
+            )
 
     async def _show_main_menu(update: Update):
         uid = update.effective_user.id
@@ -691,6 +747,14 @@ def register_admin_handlers(app, settings: Settings, services: dict):
             return
         before_role = _admin_role_by_uid(target_uid)
         ok, msg = admin_svc.grant_admin(update.effective_user.id, target_uid)
+        invite_status = ""
+        if ok:
+            invite_status = await _send_events_chat_invite_to_admin(
+                context,
+                target_uid=target_uid,
+                granted_role="admin",
+            )
+            msg = f"{msg}\n{invite_status}"
         await update.effective_message.reply_text(("✅ " if ok else "⚠️ ") + msg)
         if ok:
             after_role = _admin_role_by_uid(target_uid)
@@ -701,7 +765,8 @@ def register_admin_handlers(app, settings: Settings, services: dict):
                 "\n".join(
                     [
                         f"• Пользователь: {_user_label(target_uid)}",
-                        f"• Роль: {_admin_role_label(before_role)} -> {_admin_role_label(after_role)}",
+                        f"• Роль: {_admin_role_label(before_role)} → {_admin_role_label(after_role)}",
+                        f"• Invite-статус: {invite_status or '—'}",
                     ]
                 ),
             )
@@ -726,7 +791,7 @@ def register_admin_handlers(app, settings: Settings, services: dict):
                 "\n".join(
                     [
                         f"• Пользователь: {_user_label(target_uid)}",
-                        f"• Роль: {_admin_role_label(before_role)} -> {_admin_role_label(after_role)}",
+                        f"• Роль: {_admin_role_label(before_role)} → {_admin_role_label(after_role)}",
                     ]
                 ),
             )
@@ -2256,6 +2321,14 @@ def register_admin_handlers(app, settings: Settings, services: dict):
             before_role = _admin_role_by_uid(target_uid)
             if mode == "adm_add_target":
                 ok, msg = admin_svc.grant_admin(uid, int(target_uid))
+                invite_status = ""
+                if ok:
+                    invite_status = await _send_events_chat_invite_to_admin(
+                        context,
+                        target_uid=int(target_uid),
+                        granted_role="admin",
+                    )
+                    msg = f"{msg}\n{invite_status}"
                 state.clear_state(uid)
                 await _show_admins_menu(update)
                 await update.effective_message.reply_text(("✅ " if ok else "⚠️ ") + msg, reply_markup=kb_admin_admins())
@@ -2268,7 +2341,8 @@ def register_admin_handlers(app, settings: Settings, services: dict):
                         "\n".join(
                             [
                                 f"• Пользователь: {_user_label(target_uid)}",
-                                f"• Роль: {_admin_role_label(before_role)} -> {_admin_role_label(after_role)}",
+                                f"• Роль: {_admin_role_label(before_role)} → {_admin_role_label(after_role)}",
+                                f"• Invite-статус: {invite_status or '—'}",
                             ]
                         ),
                     )
@@ -2287,7 +2361,7 @@ def register_admin_handlers(app, settings: Settings, services: dict):
                         "\n".join(
                             [
                                 f"• Пользователь: {_user_label(target_uid)}",
-                                f"• Роль: {_admin_role_label(before_role)} -> {_admin_role_label(after_role)}",
+                                f"• Роль: {_admin_role_label(before_role)} → {_admin_role_label(after_role)}",
                             ]
                         ),
                     )
@@ -2295,9 +2369,18 @@ def register_admin_handlers(app, settings: Settings, services: dict):
             if mode == "adm_promote_target":
                 ok, msg = admin_svc.grant_owner(uid, int(target_uid))
                 action = "Выдана роль owner"
+                invite_status = ""
+                if ok:
+                    invite_status = await _send_events_chat_invite_to_admin(
+                        context,
+                        target_uid=int(target_uid),
+                        granted_role="owner",
+                    )
+                    msg = f"{msg}\n{invite_status}"
             else:
                 ok, msg = admin_svc.demote_owner_to_admin(uid, int(target_uid))
                 action = "Понижение owner до admin"
+                invite_status = ""
             state.clear_state(uid)
             await _show_admins_menu(update)
             await update.effective_message.reply_text(("✅ " if ok else "⚠️ ") + msg, reply_markup=kb_admin_admins())
@@ -2310,7 +2393,8 @@ def register_admin_handlers(app, settings: Settings, services: dict):
                     "\n".join(
                         [
                             f"• Пользователь: {_user_label(target_uid)}",
-                            f"• Роль: {_admin_role_label(before_role)} -> {_admin_role_label(after_role)}",
+                            f"• Роль: {_admin_role_label(before_role)} → {_admin_role_label(after_role)}",
+                            f"• Invite-статус: {invite_status or '—'}",
                         ]
                     ),
                 )
