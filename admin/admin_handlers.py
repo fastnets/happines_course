@@ -50,6 +50,66 @@ def _extract_quest_points(item: dict) -> int:
         return 0
 
 
+def _short_text(value: object, limit: int = 80) -> str:
+    if value is None:
+        return "—"
+    text = re.sub(r"\s+", " ", str(value).strip())
+    if not text:
+        return "—"
+    if len(text) <= limit:
+        return text
+    return text[: max(1, limit - 1)] + "…"
+
+
+def _int_text(value: object) -> str:
+    if value in (None, ""):
+        return "—"
+    try:
+        return str(int(value))
+    except Exception:
+        return _short_text(value, limit=24)
+
+
+def _yes_no(value: object) -> str:
+    return "да" if bool(value) else "нет"
+
+
+def _diff_line(label: str, old_value: object, new_value: object, formatter=None) -> str | None:
+    fmt = formatter or _short_text
+    old_s = fmt(old_value)
+    new_s = fmt(new_value)
+    if old_s == new_s:
+        return None
+    if old_s == "—":
+        return f"• {label}: → {new_s}"
+    if new_s == "—":
+        return f"• {label}: {old_s} →"
+    return f"• {label}: {old_s} → {new_s}"
+
+
+def _format_user_ref(user_id: int, user_row: dict | None = None) -> str:
+    uid = int(user_id or 0)
+    if uid <= 0:
+        return "id=—"
+    row = user_row or {}
+    username = str(row.get("username") or "").strip().lstrip("@")
+    if username:
+        return f"@{username} (id={uid})"
+    display_name = str(row.get("display_name") or "").strip()
+    if display_name:
+        return f"{_short_text(display_name, limit=40)} (id={uid})"
+    return f"id={uid}"
+
+
+def _admin_role_label(role: str) -> str:
+    role_s = str(role or "").strip().lower()
+    if role_s == "owner":
+        return "owner"
+    if role_s == "admin":
+        return "admin"
+    return "нет роли"
+
+
 def kb(rows):
     return ReplyKeyboardMarkup(rows, resize_keyboard=True)
 
@@ -140,6 +200,7 @@ def register_admin_handlers(app, settings: Settings, services: dict):
     lesson_repo = schedule.lesson
     quest_repo = schedule.quest
     extra_repo = getattr(schedule, "extra", None)
+    admin_events_chat_id = getattr(settings, "admin_events_chat_id", None)
 
     # ----------------------------
     # Navigation helpers
@@ -149,6 +210,49 @@ def register_admin_handlers(app, settings: Settings, services: dict):
         if extra:
             payload.update(extra)
         state.set_state(uid, ADMIN_MENU_STEP, payload)
+
+    def _get_user_row(uid: int) -> dict | None:
+        try:
+            if not hasattr(user_svc, "users") or not hasattr(user_svc.users, "get_user"):
+                return None
+            return user_svc.users.get_user(int(uid))
+        except Exception:
+            return None
+
+    def _user_label(uid: int) -> str:
+        return _format_user_ref(uid, _get_user_row(uid))
+
+    def _admin_role_by_uid(uid: int) -> str:
+        try:
+            if not admin_svc or not hasattr(admin_svc, "admins"):
+                return "нет роли"
+            if admin_svc.admins.is_owner(int(uid)):
+                return "owner"
+            if admin_svc.admins.is_admin(int(uid)):
+                return "admin"
+        except Exception:
+            pass
+        return "нет роли"
+
+    async def _emit_admin_event(context: ContextTypes.DEFAULT_TYPE, actor_id: int, action: str, details: str = ""):
+        if not admin_events_chat_id:
+            return
+        now_s = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        details_s = str(details or "").strip()
+        lines = [
+            "📣 Админ-событие",
+            f"Действие: {action}",
+            f"Кто: {_user_label(actor_id)}",
+        ]
+        if details_s:
+            lines.append("Что изменилось:")
+            lines.append(details_s)
+        lines.append(f"Когда: {now_s}")
+        msg = "\n".join(lines)
+        try:
+            await context.bot.send_message(chat_id=int(admin_events_chat_id), text=msg)
+        except Exception:
+            log.exception("Failed to send admin event")
 
     async def _show_main_menu(update: Update):
         uid = update.effective_user.id
@@ -568,7 +672,7 @@ def register_admin_handlers(app, settings: Settings, services: dict):
             uid = int(r.get("user_id") or 0)
             role = str(r.get("role") or "admin").strip().lower()
             mark = "👑 owner" if role == "owner" else "🛠 admin"
-            lines.append(f"• {uid} — {mark}")
+            lines.append(f"• {_user_label(uid)} — {mark}")
         await update.effective_message.reply_text("\n".join(lines), reply_markup=reply_markup)
 
     async def cmd_admins(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -585,8 +689,22 @@ def register_admin_handlers(app, settings: Settings, services: dict):
         if not target_uid:
             await update.effective_message.reply_text("Формат: /admin_add <user_id>")
             return
+        before_role = _admin_role_by_uid(target_uid)
         ok, msg = admin_svc.grant_admin(update.effective_user.id, target_uid)
         await update.effective_message.reply_text(("✅ " if ok else "⚠️ ") + msg)
+        if ok:
+            after_role = _admin_role_by_uid(target_uid)
+            await _emit_admin_event(
+                context,
+                update.effective_user.id,
+                "Выдана роль admin",
+                "\n".join(
+                    [
+                        f"• Пользователь: {_user_label(target_uid)}",
+                        f"• Роль: {_admin_role_label(before_role)} -> {_admin_role_label(after_role)}",
+                    ]
+                ),
+            )
 
     async def cmd_admin_remove(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not _is_owner(update):
@@ -596,8 +714,22 @@ def register_admin_handlers(app, settings: Settings, services: dict):
         if not target_uid:
             await update.effective_message.reply_text("Формат: /admin_remove <user_id>")
             return
+        before_role = _admin_role_by_uid(target_uid)
         ok, msg = admin_svc.remove_admin(update.effective_user.id, target_uid)
         await update.effective_message.reply_text(("✅ " if ok else "⚠️ ") + msg)
+        if ok:
+            after_role = _admin_role_by_uid(target_uid)
+            await _emit_admin_event(
+                context,
+                update.effective_user.id,
+                "Админ удалён",
+                "\n".join(
+                    [
+                        f"• Пользователь: {_user_label(target_uid)}",
+                        f"• Роль: {_admin_role_label(before_role)} -> {_admin_role_label(after_role)}",
+                    ]
+                ),
+            )
 
     async def _reply_ticket_and_notify(
         update: Update,
@@ -1223,10 +1355,23 @@ def register_admin_handlers(app, settings: Settings, services: dict):
                 await update.effective_message.reply_text("Нужен номер дня (число)."); raise ApplicationHandlerStop
             day = int(text)
             if mode == "l_delete_day":
+                old = lesson_repo.get_by_day(day)
                 ok = lesson_repo.delete_day(day)
                 state.clear_state(update.effective_user.id)
                 await _show_lessons_menu(update)
                 await update.effective_message.reply_text("✅ Удалено" if ok else "⚠️ Не найдено")
+                if ok:
+                    details = [f"• День: {day}"]
+                    if old:
+                        details.append(f"• Название: {_short_text(old.get('title'))}")
+                        details.append(f"• Баллы: {_int_text(old.get('points_viewed'))}")
+                        details.append(f"• Видео: {_short_text(old.get('video_url'), limit=120)}")
+                    await _emit_admin_event(
+                        context,
+                        uid,
+                        "Удалена лекция",
+                        "\n".join(details),
+                    )
                 return
             existing = lesson_repo.get_by_day(day)
             payload = {"mode": "l_title", "day_index": day}
@@ -1262,10 +1407,29 @@ def register_admin_handlers(app, settings: Settings, services: dict):
             if not re.match(r"^\d+$", text):
                 await update.effective_message.reply_text("Нужно целое число, например: 1"); raise ApplicationHandlerStop
             day = int(payload["day_index"])
-            lesson_repo.upsert_lesson(day, payload["title"], payload["description"], payload["video_url"], int(text))
+            points = int(text)
+            old = lesson_repo.get_by_day(day) or {}
+            lesson_repo.upsert_lesson(day, payload["title"], payload["description"], payload["video_url"], points)
             state.clear_state(update.effective_user.id)
             await _show_lessons_menu(update)
             await update.effective_message.reply_text("✅ Сохранено.")
+            details = [f"• День: {day}"]
+            for line in (
+                _diff_line("Название", old.get("title"), payload["title"]),
+                _diff_line("Описание", old.get("description"), payload["description"], formatter=lambda v: _short_text(v, limit=120)),
+                _diff_line("Видео", old.get("video_url"), payload["video_url"], formatter=lambda v: _short_text(v, limit=120)),
+                _diff_line("Баллы", old.get("points_viewed"), points, formatter=_int_text),
+            ):
+                if line:
+                    details.append(line)
+            if len(details) == 1:
+                details.append("• Изменений в полях нет (повторное сохранение).")
+            await _emit_admin_event(
+                context,
+                uid,
+                "Создана лекция" if not old else "Обновлена лекция",
+                "\n".join(details),
+            )
             return
 
         # --- Quests wizard ---
@@ -1274,10 +1438,23 @@ def register_admin_handlers(app, settings: Settings, services: dict):
                 await update.effective_message.reply_text("Нужен номер дня (число)."); raise ApplicationHandlerStop
             day = int(text)
             if mode == "qst_delete_day":
+                old = quest_repo.get_by_day(day)
                 ok = quest_repo.delete_day(day)
                 state.clear_state(update.effective_user.id)
                 await _show_quests_menu(update)
                 await update.effective_message.reply_text("✅ Удалено" if ok else "⚠️ Не найдено")
+                if ok:
+                    details = [f"• День: {day}"]
+                    if old:
+                        details.append(f"• Текст: {_short_text(old.get('prompt'), limit=120)}")
+                        details.append(f"• Баллы: {_int_text(old.get('points'))}")
+                        details.append(f"• Фото: {_yes_no(bool(old.get('photo_file_id')))}")
+                    await _emit_admin_event(
+                        context,
+                        uid,
+                        "Удалено задание",
+                        "\n".join(details),
+                    )
                 return
             existing = quest_repo.get_by_day(day)
             payload = {"mode": "qst_prompt", "day_index": day}
@@ -1309,14 +1486,32 @@ def register_admin_handlers(app, settings: Settings, services: dict):
             if not re.match(r"^\d+$", text):
                 await update.effective_message.reply_text("Нужно целое число, например: 1"); raise ApplicationHandlerStop
             day = int(payload["day_index"])
+            points = int(text)
+            old = quest_repo.get_by_day(day) or {}
             try:
-                quest_repo.upsert_quest(day, int(text), payload["prompt"], payload.get("photo_file_id"))
+                quest_repo.upsert_quest(day, points, payload["prompt"], payload.get("photo_file_id"))
             except Exception:
                 await update.effective_message.reply_text("⚠️ Упс, ошибка. Попробуй ещё раз.")
                 raise ApplicationHandlerStop
             state.clear_state(update.effective_user.id)
             await _show_quests_menu(update)
             await update.effective_message.reply_text("✅ Сохранено.")
+            details = [f"• День: {day}"]
+            for line in (
+                _diff_line("Текст", old.get("prompt"), payload["prompt"], formatter=lambda v: _short_text(v, limit=120)),
+                _diff_line("Баллы", old.get("points"), points, formatter=_int_text),
+                _diff_line("Фото", bool(old.get("photo_file_id")), bool(payload.get("photo_file_id")), formatter=_yes_no),
+            ):
+                if line:
+                    details.append(line)
+            if len(details) == 1:
+                details.append("• Изменений в полях нет (повторное сохранение).")
+            await _emit_admin_event(
+                context,
+                uid,
+                "Создано задание" if not old else "Обновлено задание",
+                "\n".join(details),
+            )
             return
 
         # --- Extra materials wizard ---
@@ -1327,10 +1522,24 @@ def register_admin_handlers(app, settings: Settings, services: dict):
                 await update.effective_message.reply_text("Нужен номер дня (число)."); raise ApplicationHandlerStop
             day = int(text)
             if mode == "ext_delete_day":
+                old = extra_repo.get_by_day(day)
                 ok = extra_repo.delete_day(day)
                 state.clear_state(update.effective_user.id)
                 await _show_extras_menu(update)
                 await update.effective_message.reply_text("✅ Удалено" if ok else "⚠️ Не найдено")
+                if ok:
+                    details = [f"• День: {day}"]
+                    if old:
+                        details.append(f"• Текст: {_short_text(old.get('content_text'), limit=120)}")
+                        details.append(f"• Баллы: {_int_text(old.get('points'))}")
+                        details.append(f"• Ссылка: {_short_text(old.get('link_url'), limit=120)}")
+                        details.append(f"• Фото: {_yes_no(bool(old.get('photo_file_id')))}")
+                    await _emit_admin_event(
+                        context,
+                        uid,
+                        "Удалён доп. материал",
+                        "\n".join(details),
+                    )
                 return
             existing = extra_repo.get_by_day(day)
             payload = {"mode": "ext_text", "day_index": day}
@@ -1375,11 +1584,13 @@ def register_admin_handlers(app, settings: Settings, services: dict):
             if not re.match(r"^\d+$", text):
                 await update.effective_message.reply_text("Нужно целое число, например: 0"); raise ApplicationHandlerStop
             day = int(payload["day_index"])
+            points = int(text)
+            old = extra_repo.get_by_day(day) or {}
             try:
                 extra_repo.upsert(
                     day_index=day,
                     content_text=payload["content_text"],
-                    points=int(text),
+                    points=points,
                     link_url=payload.get("link_url"),
                     photo_file_id=payload.get("photo_file_id"),
                     is_active=True,
@@ -1390,6 +1601,23 @@ def register_admin_handlers(app, settings: Settings, services: dict):
             state.clear_state(update.effective_user.id)
             await _show_extras_menu(update)
             await update.effective_message.reply_text("✅ Сохранено.")
+            details = [f"• День: {day}"]
+            for line in (
+                _diff_line("Текст", old.get("content_text"), payload["content_text"], formatter=lambda v: _short_text(v, limit=120)),
+                _diff_line("Баллы", old.get("points"), points, formatter=_int_text),
+                _diff_line("Ссылка", old.get("link_url"), payload.get("link_url"), formatter=lambda v: _short_text(v, limit=120)),
+                _diff_line("Фото", bool(old.get("photo_file_id")), bool(payload.get("photo_file_id")), formatter=_yes_no),
+            ):
+                if line:
+                    details.append(line)
+            if len(details) == 1:
+                details.append("• Изменений в полях нет (повторное сохранение).")
+            await _emit_admin_event(
+                context,
+                uid,
+                "Создан доп. материал" if not old else "Обновлён доп. материал",
+                "\n".join(details),
+            )
             return
 
         # --- Questionnaire wizard (create/edit/delete) ---
@@ -1425,11 +1653,12 @@ def register_admin_handlers(app, settings: Settings, services: dict):
             if not re.match(r"^\d+$", text):
                 await update.effective_message.reply_text("Нужно целое число, например: 1"); raise ApplicationHandlerStop
             day_index = int(payload.get("day_index") or 1)
+            points = int(text)
             qid = qsvc.create(
                 payload["question"],
                 "manual",
                 bool(payload["use_in_charts"]),
-                int(text),
+                points,
                 update.effective_user.id,
                 day_index=day_index,
             )
@@ -1437,6 +1666,20 @@ def register_admin_handlers(app, settings: Settings, services: dict):
             state.clear_state(update.effective_user.id)
             await _show_q_menu(update)
             await update.effective_message.reply_text(f"✅ Анкета создана. ID={qid}.\nВопрос: {item['question']}")
+            await _emit_admin_event(
+                context,
+                uid,
+                "Создание анкеты",
+                "\n".join(
+                    [
+                        f"• ID: {qid}",
+                        f"• День: {day_index}",
+                        f"• Баллы: {points}",
+                        f"• Вопрос: {_short_text(payload.get('question'), limit=120)}",
+                        f"• В диаграммах: {_yes_no(payload.get('use_in_charts'))}",
+                    ]
+                ),
+            )
             return
 
         if mode == "q_edit_id":
@@ -1491,27 +1734,60 @@ def register_admin_handlers(app, settings: Settings, services: dict):
             if not re.match(r"^\d+$", text):
                 await update.effective_message.reply_text("Нужно целое число, например: 1"); raise ApplicationHandlerStop
             qid = int(payload["id"])
+            old = qsvc.get(qid) or {}
             day_index = int(payload.get("day_index") or 1)
+            points = int(text)
             qsvc.update(
                 qid,
                 payload["question"],
                 str(payload.get("qtype") or "manual"),
                 bool(payload["use_in_charts"]),
-                int(text),
+                points,
                 day_index=day_index,
             )
             state.clear_state(update.effective_user.id)
             await _show_q_menu(update)
             await update.effective_message.reply_text("✅ Анкета обновлена.")
+            details = [f"• ID: {qid}"]
+            for line in (
+                _diff_line("Вопрос", old.get("question"), payload["question"], formatter=lambda v: _short_text(v, limit=120)),
+                _diff_line("День", old.get("day_index"), day_index, formatter=_int_text),
+                _diff_line("Баллы", old.get("points"), points, formatter=_int_text),
+                _diff_line("В диаграммах", old.get("use_in_charts"), bool(payload["use_in_charts"]), formatter=_yes_no),
+            ):
+                if line:
+                    details.append(line)
+            if len(details) == 1:
+                details.append("• Изменений в полях нет (повторное сохранение).")
+            await _emit_admin_event(
+                context,
+                uid,
+                "Обновление анкеты",
+                "\n".join(details),
+            )
             return
 
         if mode == "q_delete_id":
             if not re.match(r"^\d+$", text):
                 await update.effective_message.reply_text("Нужен ID анкеты (число)."); raise ApplicationHandlerStop
-            ok = qsvc.delete(int(text))
+            qid = int(text)
+            old = qsvc.get(qid)
+            ok = qsvc.delete(qid)
             state.clear_state(update.effective_user.id)
             await _show_q_menu(update)
             await update.effective_message.reply_text("✅ Удалено" if ok else "⚠️ Не найдено")
+            if ok:
+                details = [f"• ID: {qid}"]
+                if old:
+                    details.append(f"• День: {_int_text(old.get('day_index'))}")
+                    details.append(f"• Баллы: {_int_text(old.get('points'))}")
+                    details.append(f"• Вопрос: {_short_text(old.get('question'), limit=120)}")
+                await _emit_admin_event(
+                    context,
+                    uid,
+                    "Удалена анкета",
+                    "\n".join(details),
+                )
             return
 
         # --- Achievements wizard ---
@@ -1951,6 +2227,19 @@ def register_admin_handlers(app, settings: Settings, services: dict):
             state.clear_state(update.effective_user.id)
             await _show_q_menu(update)
             await update.effective_message.reply_text(f"✅ Запланировано. Анкета ID={qid}. Получателей: {created}")
+            await _emit_admin_event(
+                context,
+                uid,
+                "Запланирована рассылка анкеты",
+                "\n".join(
+                    [
+                        f"• ID: {qid}",
+                        f"• Время отправки: {hhmm}",
+                        f"• Получателей: {created}",
+                        "• Тип: broadcast_optional",
+                    ]
+                ),
+            )
             return
 
         # --- Admins owner wizard ---
@@ -1964,25 +2253,67 @@ def register_admin_handlers(app, settings: Settings, services: dict):
             if err:
                 await update.effective_message.reply_text(err)
                 raise ApplicationHandlerStop
+            before_role = _admin_role_by_uid(target_uid)
             if mode == "adm_add_target":
                 ok, msg = admin_svc.grant_admin(uid, int(target_uid))
                 state.clear_state(uid)
                 await _show_admins_menu(update)
                 await update.effective_message.reply_text(("✅ " if ok else "⚠️ ") + msg, reply_markup=kb_admin_admins())
+                if ok:
+                    after_role = _admin_role_by_uid(target_uid)
+                    await _emit_admin_event(
+                        context,
+                        uid,
+                        "Выдана роль admin",
+                        "\n".join(
+                            [
+                                f"• Пользователь: {_user_label(target_uid)}",
+                                f"• Роль: {_admin_role_label(before_role)} -> {_admin_role_label(after_role)}",
+                            ]
+                        ),
+                    )
                 return
             if mode == "adm_remove_target":
                 ok, msg = admin_svc.remove_admin(uid, int(target_uid))
                 state.clear_state(uid)
                 await _show_admins_menu(update)
                 await update.effective_message.reply_text(("✅ " if ok else "⚠️ ") + msg, reply_markup=kb_admin_admins())
+                if ok:
+                    after_role = _admin_role_by_uid(target_uid)
+                    await _emit_admin_event(
+                        context,
+                        uid,
+                        "Админ удалён",
+                        "\n".join(
+                            [
+                                f"• Пользователь: {_user_label(target_uid)}",
+                                f"• Роль: {_admin_role_label(before_role)} -> {_admin_role_label(after_role)}",
+                            ]
+                        ),
+                    )
                 return
             if mode == "adm_promote_target":
                 ok, msg = admin_svc.grant_owner(uid, int(target_uid))
+                action = "Выдана роль owner"
             else:
                 ok, msg = admin_svc.demote_owner_to_admin(uid, int(target_uid))
+                action = "Понижение owner до admin"
             state.clear_state(uid)
             await _show_admins_menu(update)
             await update.effective_message.reply_text(("✅ " if ok else "⚠️ ") + msg, reply_markup=kb_admin_admins())
+            if ok:
+                after_role = _admin_role_by_uid(target_uid)
+                await _emit_admin_event(
+                    context,
+                    uid,
+                    action,
+                    "\n".join(
+                        [
+                            f"• Пользователь: {_user_label(target_uid)}",
+                            f"• Роль: {_admin_role_label(before_role)} -> {_admin_role_label(after_role)}",
+                        ]
+                    ),
+                )
             return
 
         raise ApplicationHandlerStop
