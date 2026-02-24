@@ -439,7 +439,19 @@ def register_user_handlers(app, settings: Settings, services: dict):
                 f"📝 Задание дня {day_index}:\n{quest['prompt']}\n\n"
                 "Нажми кнопку ниже, чтобы продолжить, или просто ответь сообщением в чат."
             )
-            msg = await context.bot.send_message(chat_id=uid, text=qtext, reply_markup=kb_i)
+            photo_file_id = quest.get("photo_file_id")
+            if photo_file_id:
+                try:
+                    msg = await context.bot.send_photo(
+                        chat_id=uid,
+                        photo=photo_file_id,
+                        caption=qtext,
+                        reply_markup=kb_i,
+                    )
+                except Exception:
+                    msg = await context.bot.send_message(chat_id=uid, text=qtext, reply_markup=kb_i)
+            else:
+                msg = await context.bot.send_message(chat_id=uid, text=qtext, reply_markup=kb_i)
             _remember_material_message(uid, item, int(msg.message_id))
             learning.state.set_state(
                 uid,
@@ -582,7 +594,18 @@ def register_user_handlers(app, settings: Settings, services: dict):
                             f"📝 Задание дня {day_index}:\n{quest['prompt']}\n\n"
                             "Нажми кнопку ниже, чтобы продолжить, или просто ответь сообщением в чат."
                         )
-                        await update.effective_message.reply_text(qtext, reply_markup=kb_i)
+                        photo_file_id = quest.get("photo_file_id")
+                        if photo_file_id:
+                            try:
+                                await update.effective_message.reply_photo(
+                                    photo=photo_file_id,
+                                    caption=qtext,
+                                    reply_markup=kb_i,
+                                )
+                            except Exception:
+                                await update.effective_message.reply_text(qtext, reply_markup=kb_i)
+                        else:
+                            await update.effective_message.reply_text(qtext, reply_markup=kb_i)
                 await update.effective_message.reply_text(
                     "Главное меню 👇", reply_markup=menus.kb_main(_is_admin(u.id))
                 )

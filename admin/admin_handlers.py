@@ -1210,9 +1210,21 @@ def register_admin_handlers(app, settings: Settings, services: dict):
 
         if mode == "qst_prompt":
             payload["prompt"] = text
-            payload["mode"] = "qst_points"
+            payload["mode"] = "qst_photo"
             state.set_state(update.effective_user.id, ADMIN_WIZARD_STEP, payload)
-            await update.effective_message.reply_text("Сколько баллов за ответ на задание? (целое число)")
+            await update.effective_message.reply_text(
+                "Прикрепи фото к заданию или отправь '-' чтобы оставить задание только текстовым."
+            )
+            return
+
+        if mode == "qst_photo":
+            if text == "-":
+                payload["photo_file_id"] = None
+                payload["mode"] = "qst_points"
+                state.set_state(update.effective_user.id, ADMIN_WIZARD_STEP, payload)
+                await update.effective_message.reply_text("Сколько баллов за ответ на задание? (целое число)")
+                return
+            await update.effective_message.reply_text("Нужна фотография или символ '-' для текстового задания.")
             return
 
         if mode == "qst_points":
@@ -1824,6 +1836,32 @@ def register_admin_handlers(app, settings: Settings, services: dict):
 
         raise ApplicationHandlerStop
 
+    async def wizard_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if not _is_admin(update):
+            return
+        uid = update.effective_user.id
+        st = state.get_state(uid)
+        if not st or st.get("step") != ADMIN_WIZARD_STEP:
+            return
+
+        payload = st.get("payload_json") or {}
+        if isinstance(payload, str):
+            payload = json.loads(payload)
+        mode = payload.get("mode")
+        if mode != "qst_photo":
+            return
+
+        photos = update.effective_message.photo or []
+        if not photos:
+            await update.effective_message.reply_text("Не удалось прочитать фото. Попробуй отправить ещё раз.")
+            raise ApplicationHandlerStop
+
+        payload["photo_file_id"] = photos[-1].file_id
+        payload["mode"] = "qst_points"
+        state.set_state(uid, ADMIN_WIZARD_STEP, payload)
+        await update.effective_message.reply_text("Фото принято. Сколько баллов за ответ на задание? (целое число)")
+        raise ApplicationHandlerStop
+
     # ----------------------------
     # Register handlers
     # ----------------------------
@@ -1835,4 +1873,5 @@ def register_admin_handlers(app, settings: Settings, services: dict):
     # Admin menu navigation (reply buttons)
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, admin_menu_pick), group=-11)
     # Wizard input
+    app.add_handler(MessageHandler(filters.PHOTO, wizard_photo), group=-10)
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, wizard_text), group=-10)

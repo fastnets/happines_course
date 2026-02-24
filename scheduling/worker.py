@@ -69,6 +69,26 @@ def _collect_pending_backlog(schedule, learning, qsvc, user_id: int, day_index: 
     return pending, first_lesson_day, first_quest_day, first_questionnaire
 
 
+async def _send_quest_message(bot, user_id: int, day_index: int, quest: dict, kb):
+    qtext = (
+        f"📝 Задание дня {day_index}:\n{quest['prompt']}\n\n"
+        "Нажми кнопку ниже, чтобы продолжить, или просто ответь сообщением в чат."
+    )
+    photo_file_id = quest.get("photo_file_id")
+    if photo_file_id:
+        try:
+            return await bot.send_photo(
+                chat_id=user_id,
+                photo=photo_file_id,
+                caption=qtext,
+                reply_markup=kb,
+            )
+        except Exception:
+            # Fallback to text message (e.g. invalid file_id or caption limits)
+            pass
+    return await bot.send_message(chat_id=user_id, text=qtext, reply_markup=kb)
+
+
 async def tick(context: ContextTypes.DEFAULT_TYPE, services: dict):
     # Create new outbox jobs (lessons/quests + daily reminder) and then deliver due ones
     services["schedule"].schedule_due_jobs()
@@ -131,13 +151,9 @@ async def _process_outbox(context: ContextTypes.DEFAULT_TYPE, services: dict):
                     schedule.deliveries.mark_sent(user_id, day_index, "lesson")
 
                 if quest:
-                    qtext = (
-                        f"📝 Задание дня {day_index}:\n{quest['prompt']}\n\n"
-                        "Нажми кнопку ниже, чтобы продолжить, или просто ответь сообщением в чат."
-                    )
                     reply_cb = f"{cb.QUEST_REPLY_PREFIX}{day_index}"
                     kb = InlineKeyboardMarkup([[InlineKeyboardButton("✍️ Ответить на задание", callback_data=reply_cb)]])
-                    msg = await context.bot.send_message(chat_id=user_id, text=qtext, reply_markup=kb)
+                    msg = await _send_quest_message(context.bot, user_id, day_index, quest, kb)
                     _save_material_message(
                         schedule,
                         user_id=user_id,
@@ -199,13 +215,9 @@ async def _process_outbox(context: ContextTypes.DEFAULT_TYPE, services: dict):
                 for_date_s = payload.get("for_date")
                 quest = payload.get("quest")
                 if quest:
-                    qtext = (
-                        f"📝 Задание дня {day_index}:\n{quest['prompt']}\n\n"
-                        "Нажми кнопку ниже, чтобы продолжить, или просто ответь сообщением в чат."
-                    )
                     reply_cb = f"{cb.QUEST_REPLY_PREFIX}{day_index}"
                     kb = InlineKeyboardMarkup([[InlineKeyboardButton("✍️ Ответить на задание", callback_data=reply_cb)]])
-                    msg = await context.bot.send_message(chat_id=user_id, text=qtext, reply_markup=kb)
+                    msg = await _send_quest_message(context.bot, user_id, day_index, quest, kb)
                     _save_material_message(
                         schedule,
                         user_id=user_id,
