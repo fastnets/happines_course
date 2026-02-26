@@ -1,3 +1,4 @@
+import asyncio
 import re
 import json
 import logging
@@ -185,6 +186,7 @@ def register_admin_handlers(app, settings: Settings, services: dict):
     admin_analytics = services.get("admin_analytics")
     support_svc = services.get("support")
     achievement_svc = services.get("achievement")
+    daily_pack = services.get("daily_pack")
     user_svc = services["user"]
 
     def _is_admin(update: Update) -> bool:
@@ -260,6 +262,25 @@ def register_admin_handlers(app, settings: Settings, services: dict):
             await context.bot.send_message(chat_id=int(admin_events_chat_id), text=msg)
         except Exception:
             log.exception("Failed to send admin event")
+
+    async def _regenerate_daily_pack(trigger: str):
+        if not daily_pack:
+            return
+        try:
+            await asyncio.to_thread(
+                daily_pack.generate_set_for_today,
+                trigger=trigger,
+                force=True,
+            )
+        except Exception:
+            # Ошибки должны оставаться только в логах.
+            log.exception("Daily pack regenerate failed (trigger=%s)", trigger)
+
+    def _schedule_daily_pack_regenerate(trigger: str):
+        try:
+            asyncio.create_task(_regenerate_daily_pack(trigger))
+        except Exception:
+            log.exception("Daily pack regenerate scheduling failed (trigger=%s)", trigger)
 
     async def _send_events_chat_invite_to_admin(
         context: ContextTypes.DEFAULT_TYPE,
@@ -1422,6 +1443,8 @@ def register_admin_handlers(app, settings: Settings, services: dict):
             if mode == "l_delete_day":
                 old = lesson_repo.get_by_day(day)
                 ok = lesson_repo.delete_day(day)
+                if ok:
+                    _schedule_daily_pack_regenerate("lesson_deleted")
                 state.clear_state(update.effective_user.id)
                 await _show_lessons_menu(update)
                 await update.effective_message.reply_text("✅ Удалено" if ok else "⚠️ Не найдено")
@@ -1475,6 +1498,7 @@ def register_admin_handlers(app, settings: Settings, services: dict):
             points = int(text)
             old = lesson_repo.get_by_day(day) or {}
             lesson_repo.upsert_lesson(day, payload["title"], payload["description"], payload["video_url"], points)
+            _schedule_daily_pack_regenerate("lesson_updated" if old else "lesson_added")
             state.clear_state(update.effective_user.id)
             await _show_lessons_menu(update)
             await update.effective_message.reply_text("✅ Сохранено.")
