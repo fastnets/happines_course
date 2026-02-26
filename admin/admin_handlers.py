@@ -40,7 +40,6 @@ BTN_NO = "Нет"
 BTN_PERIOD_TODAY = "Сегодня"
 BTN_PERIOD_7 = "7 дней"
 BTN_PERIOD_30 = "30 дней"
-BTN_A_STATS = "📊 Статистика"
 
 # Tickets submenu
 BTN_T_OPEN = "🟡 Open"
@@ -153,7 +152,6 @@ def kb_admin_analytics():
     return kb(
         [
             [KeyboardButton(BTN_PERIOD_TODAY), KeyboardButton(BTN_PERIOD_7), KeyboardButton(BTN_PERIOD_30)],
-            [KeyboardButton(BTN_A_STATS)],
             [KeyboardButton(texts.BTN_BACK)],
         ]
     )
@@ -573,7 +571,7 @@ def register_admin_handlers(app, settings: Settings, services: dict):
                 return row
         return None
 
-    async def _show_analytics_menu(update: Update, days: int = 7):
+    async def _show_analytics_menu(update: Update, days: int = 7, show_report: bool = True):
         uid = update.effective_user.id
         safe_days = 7
         try:
@@ -583,9 +581,22 @@ def register_admin_handlers(app, settings: Settings, services: dict):
         if safe_days not in (1, 7, 30):
             safe_days = 7
         _set_menu(uid, "analytics", {"days": safe_days})
-        label = "Сегодня" if safe_days == 1 else f"Последние {safe_days} дней"
+        if not show_report:
+            await update.effective_message.reply_text(
+                "\U0001F4C8 \u0410\u043d\u0430\u043b\u0438\u0442\u0438\u043a\u0430\n"
+                "\u0412\u044b\u0431\u0435\u0440\u0438 \u043f\u0435\u0440\u0438\u043e\u0434:",
+                reply_markup=kb_admin_analytics(),
+            )
+            return
+        if not admin_analytics:
+            await update.effective_message.reply_text(
+                "\u26a0\ufe0f \u0421\u0435\u0440\u0432\u0438\u0441 \u0430\u043d\u0430\u043b\u0438\u0442\u0438\u043a\u0438 "
+                "\u043d\u0435 \u043f\u043e\u0434\u043a\u043b\u044e\u0447\u0451\u043d.",
+                reply_markup=kb_admin_analytics(),
+            )
+            return
         await update.effective_message.reply_text(
-            f"📈 Аналитика\nПериод: {label}\n\nНажми «{BTN_A_STATS}».",
+            admin_analytics.statistics_report(safe_days),
             reply_markup=kb_admin_analytics(),
         )
 
@@ -1114,7 +1125,7 @@ def register_admin_handlers(app, settings: Settings, services: dict):
             if text == texts.ADMIN_QUESTIONNAIRES:
                 await _show_q_menu(update); raise ApplicationHandlerStop
             if text == texts.ADMIN_ANALYTICS:
-                await _show_analytics_menu(update, 7); raise ApplicationHandlerStop
+                await _show_analytics_menu(update, 7, show_report=False); raise ApplicationHandlerStop
             if text == texts.ADMIN_ACHIEVEMENTS:
                 await _show_achievements_menu(update); raise ApplicationHandlerStop
             if text == texts.ADMIN_TICKETS:
@@ -1126,30 +1137,12 @@ def register_admin_handlers(app, settings: Settings, services: dict):
                 await _show_admins_menu(update); raise ApplicationHandlerStop
 
         if screen == "analytics":
-            payload0 = payload or {}
-            days = 7
-            try:
-                days = int(payload0.get("days") or 7)
-            except Exception:
-                days = 7
             if text == BTN_PERIOD_TODAY:
                 await _show_analytics_menu(update, 1); raise ApplicationHandlerStop
             if text == BTN_PERIOD_7:
                 await _show_analytics_menu(update, 7); raise ApplicationHandlerStop
             if text == BTN_PERIOD_30:
                 await _show_analytics_menu(update, 30); raise ApplicationHandlerStop
-
-            if not admin_analytics:
-                await update.effective_message.reply_text("⚠️ Сервис аналитики не подключён.", reply_markup=kb_admin_analytics())
-                raise ApplicationHandlerStop
-
-            if text == BTN_A_STATS:
-                await update.effective_message.reply_text(
-                    admin_analytics.statistics_report(days),
-                    reply_markup=kb_admin_analytics(),
-                )
-                raise ApplicationHandlerStop
-
         if screen == "lessons":
             if text == BTN_LIST: await lessons_list(update); raise ApplicationHandlerStop
             if text == BTN_CREATE: await lessons_create(update); raise ApplicationHandlerStop
@@ -1285,7 +1278,7 @@ def register_admin_handlers(app, settings: Settings, services: dict):
             raise ApplicationHandlerStop
         if text == texts.ADMIN_ANALYTICS:
             state.clear_state(uid)
-            await _show_analytics_menu(update, 7)
+            await _show_analytics_menu(update, 7, show_report=False)
             raise ApplicationHandlerStop
         if text == texts.ADMIN_ACHIEVEMENTS:
             state.clear_state(uid)
