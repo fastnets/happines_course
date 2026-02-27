@@ -117,6 +117,18 @@ def _admin_role_label(role: str) -> str:
     return "нет роли"
 
 
+def _questionnaire_type_label(qtype: str) -> str:
+    key = str(qtype or "").strip().lower()
+    mapping = {
+        "manual": "по дню курса",
+        "daily": "ежедневная",
+        "broadcast_optional": "рандомная всем (опционально)",
+        "broadcast_required": "рассылка всем (обязательно)",
+        "broadcast": "рассылка всем",
+    }
+    return mapping.get(key, key or "не указан")
+
+
 def kb(rows):
     return ReplyKeyboardMarkup(rows, resize_keyboard=True)
 
@@ -978,10 +990,11 @@ def register_admin_handlers(app, settings: Settings, services: dict):
         if not items:
             await update.effective_message.reply_text("📋 Анкеты: пока пусто.", reply_markup=kb_admin_actions(True))
             return
-        lines = ["📋 *Анкеты* (id → день, тип, баллы, диаграммы)"]
+        lines = ["📋 Анкеты (id → день, тип, баллы, диаграммы)"]
         for it in items:
             qid = it["id"]
             qtype = str(it.get("qtype") or "manual")
+            qtype_label = _questionnaire_type_label(qtype)
             day = it.get("day_index")
             day_label = str(int(day)) if day is not None else "—"
             pts = int(it.get("points") or 0)
@@ -989,9 +1002,9 @@ def register_admin_handlers(app, settings: Settings, services: dict):
             q = it.get("question") or ""
             if len(q) > 70:
                 q = q[:67] + "..."
-            lines.append(f"• *{qid}* — day={day_label} — {qtype} — +{pts} — charts={charts} — {q}")
+            lines.append(f"• {qid} — day={day_label} — {qtype_label} — +{pts} — charts={charts} — {q}")
         await update.effective_message.reply_text(
-            "\n".join(lines), parse_mode="Markdown", reply_markup=kb_admin_actions(True)
+            "\n".join(lines), reply_markup=kb_admin_actions(True)
         )
 
     async def q_create(update: Update):
