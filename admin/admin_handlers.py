@@ -900,7 +900,7 @@ def register_admin_handlers(app, settings: Settings, services: dict):
     async def lessons_edit(update: Update):
         uid = update.effective_user.id
         state.set_state(uid, ADMIN_WIZARD_STEP, {"mode": "l_edit_day"})
-        await update.effective_message.reply_text("✏️ Редактирование лекции\n\nВведи номер дня (целое число), например: 1")
+        await update.effective_message.reply_text("✏️ Редактирование лекции\n\nВведи номер существующего дня (целое число), например: 1")
 
     async def lessons_delete(update: Update):
         uid = update.effective_user.id
@@ -931,7 +931,7 @@ def register_admin_handlers(app, settings: Settings, services: dict):
     async def quests_edit(update: Update):
         uid = update.effective_user.id
         state.set_state(uid, ADMIN_WIZARD_STEP, {"mode": "qst_edit_day"})
-        await update.effective_message.reply_text("✏️ Редактирование задания\n\nВведи номер дня (целое число), например: 1")
+        await update.effective_message.reply_text("✏️ Редактирование задания\n\nВведи номер существующего дня (целое число), например: 1")
 
     async def quests_delete(update: Update):
         uid = update.effective_user.id
@@ -975,7 +975,7 @@ def register_admin_handlers(app, settings: Settings, services: dict):
             return
         uid = update.effective_user.id
         state.set_state(uid, ADMIN_WIZARD_STEP, {"mode": "ext_edit_day"})
-        await update.effective_message.reply_text("✏️ Редактирование доп. материала\n\nВведи номер дня (целое число), например: 1")
+        await update.effective_message.reply_text("✏️ Редактирование доп. материала\n\nВведи номер существующего дня (целое число), например: 1")
 
     async def extras_delete(update: Update):
         if not extra_repo:
@@ -1467,6 +1467,25 @@ def register_admin_handlers(app, settings: Settings, services: dict):
                         "\n".join(details),
                     )
                 return
+            if mode == "l_edit_day":
+                existing = lesson_repo.get_by_day(day)
+                if not existing:
+                    await update.effective_message.reply_text("⚠️ Лекция на этом дне не найдена."); raise ApplicationHandlerStop
+                payload = {
+                    "mode": "l_edit_new_day",
+                    "source_day_index": day,
+                    "day_index": day,
+                    "title": str(existing.get("title") or ""),
+                    "description": str(existing.get("description") or ""),
+                    "video_url": str(existing.get("video_url") or ""),
+                    "points_viewed": int(existing.get("points_viewed") or 0),
+                }
+                state.set_state(update.effective_user.id, ADMIN_WIZARD_STEP, payload)
+                await update.effective_message.reply_text(
+                    f"Текущий день: {day}.\n"
+                    "Введи новый номер дня или '-' чтобы оставить как есть."
+                )
+                return
             existing = lesson_repo.get_by_day(day)
             payload = {"mode": "l_title", "day_index": day}
             state.set_state(update.effective_user.id, ADMIN_WIZARD_STEP, payload)
@@ -1474,41 +1493,103 @@ def register_admin_handlers(app, settings: Settings, services: dict):
                 f"День {day}. Введи название лекции." + (f"\nТекущее: {existing['title']}" if existing else ""))
             return
 
+        if mode == "l_edit_new_day":
+            source_day = int(payload.get("source_day_index") or 0)
+            if text.strip() == "-":
+                new_day = source_day
+            else:
+                if not re.match(r"^\d+$", text):
+                    await update.effective_message.reply_text("Нужен номер дня (число)."); raise ApplicationHandlerStop
+                new_day = int(text)
+                if new_day <= 0:
+                    await update.effective_message.reply_text("Номер дня должен быть больше нуля."); raise ApplicationHandlerStop
+            if new_day != source_day and lesson_repo.get_by_day(new_day):
+                await update.effective_message.reply_text("⚠️ На этом дне уже есть лекция. Выбери другой день."); raise ApplicationHandlerStop
+            payload["day_index"] = new_day
+            payload["mode"] = "l_title"
+            state.set_state(update.effective_user.id, ADMIN_WIZARD_STEP, payload)
+            await update.effective_message.reply_text(
+                f"День {new_day}. Введи название лекции.\n"
+                f"Текущее: {payload.get('title') or '—'}\n"
+                "Отправь '-' чтобы оставить как есть."
+            )
+            return
+
         if mode == "l_title":
-            payload["title"] = text
+            is_edit = payload.get("source_day_index") is not None
+            if is_edit and text.strip() == "-":
+                payload["title"] = str(payload.get("title") or "")
+            else:
+                payload["title"] = text
             payload["mode"] = "l_desc"
             state.set_state(update.effective_user.id, ADMIN_WIZARD_STEP, payload)
-            await update.effective_message.reply_text("Введи описание лекции (текст).")
+            if is_edit:
+                await update.effective_message.reply_text(
+                    "Введи описание лекции (текст).\n"
+                    f"Текущее: {_short_text(payload.get('description'), limit=120)}\n"
+                    "Отправь '-' чтобы оставить как есть."
+                )
+            else:
+                await update.effective_message.reply_text("Введи описание лекции (текст).")
             return
 
         if mode == "l_desc":
-            payload["description"] = text
+            is_edit = payload.get("source_day_index") is not None
+            if is_edit and text.strip() == "-":
+                payload["description"] = str(payload.get("description") or "")
+            else:
+                payload["description"] = text
             payload["mode"] = "l_video"
             state.set_state(update.effective_user.id, ADMIN_WIZARD_STEP, payload)
-            await update.effective_message.reply_text("Вставь ссылку на видео (Rutube/YouTube и т.п.).")
+            if is_edit:
+                await update.effective_message.reply_text(
+                    "Вставь ссылку на видео (Rutube/YouTube и т.п.).\n"
+                    f"Текущая: {_short_text(payload.get('video_url'), limit=120)}\n"
+                    "Отправь '-' чтобы оставить как есть."
+                )
+            else:
+                await update.effective_message.reply_text("Вставь ссылку на видео (Rutube/YouTube и т.п.).")
             return
 
         if mode == "l_video":
-            if not (text.startswith("http://") or text.startswith("https://")):
-                await update.effective_message.reply_text("Нужна ссылка, которая начинается с http:// или https://"); raise ApplicationHandlerStop
-            payload["video_url"] = text
+            is_edit = payload.get("source_day_index") is not None
+            if is_edit and text.strip() == "-":
+                payload["video_url"] = str(payload.get("video_url") or "")
+            else:
+                if not (text.startswith("http://") or text.startswith("https://")):
+                    await update.effective_message.reply_text("Нужна ссылка, которая начинается с http:// или https://"); raise ApplicationHandlerStop
+                payload["video_url"] = text
             payload["mode"] = "l_points"
             state.set_state(update.effective_user.id, ADMIN_WIZARD_STEP, payload)
-            await update.effective_message.reply_text("Сколько баллов за кнопку «Просмотрено»? (целое число)")
+            if is_edit:
+                await update.effective_message.reply_text(
+                    "Сколько баллов за кнопку «Просмотрено»? (целое число)\n"
+                    f"Текущее: {int(payload.get('points_viewed') or 0)}\n"
+                    "Отправь '-' чтобы оставить как есть."
+                )
+            else:
+                await update.effective_message.reply_text("Сколько баллов за кнопку «Просмотрено»? (целое число)")
             return
 
         if mode == "l_points":
-            if not re.match(r"^\d+$", text):
-                await update.effective_message.reply_text("Нужно целое число, например: 1"); raise ApplicationHandlerStop
+            is_edit = payload.get("source_day_index") is not None
+            if is_edit and text.strip() == "-":
+                points = int(payload.get("points_viewed") or 0)
+            else:
+                if not re.match(r"^\d+$", text):
+                    await update.effective_message.reply_text("Нужно целое число, например: 1"); raise ApplicationHandlerStop
+                points = int(text)
             day = int(payload["day_index"])
-            points = int(text)
-            old = lesson_repo.get_by_day(day) or {}
+            source_day = int(payload.get("source_day_index") or day)
+            old = lesson_repo.get_by_day(source_day) or {}
             lesson_repo.upsert_lesson(day, payload["title"], payload["description"], payload["video_url"], points)
+            if source_day != day:
+                lesson_repo.delete_day(source_day)
             _schedule_daily_pack_regenerate("lesson_updated" if old else "lesson_added")
             state.clear_state(update.effective_user.id)
             await _show_lessons_menu(update)
             await update.effective_message.reply_text("✅ Сохранено.")
-            details = [f"• День: {day}"]
+            details = [f"• День: {source_day} → {day}" if source_day != day else f"• День: {day}"]
             for line in (
                 _diff_line("Название", old.get("title"), payload["title"]),
                 _diff_line("Описание", old.get("description"), payload["description"], formatter=lambda v: _short_text(v, limit=120)),
@@ -1551,6 +1632,24 @@ def register_admin_handlers(app, settings: Settings, services: dict):
                         "\n".join(details),
                     )
                 return
+            if mode == "qst_edit_day":
+                existing = quest_repo.get_by_day(day)
+                if not existing:
+                    await update.effective_message.reply_text("⚠️ Задание на этом дне не найдено."); raise ApplicationHandlerStop
+                payload = {
+                    "mode": "qst_edit_new_day",
+                    "source_day_index": day,
+                    "day_index": day,
+                    "prompt": str(existing.get("prompt") or ""),
+                    "photo_file_id": existing.get("photo_file_id"),
+                    "points": int(existing.get("points") or 0),
+                }
+                state.set_state(update.effective_user.id, ADMIN_WIZARD_STEP, payload)
+                await update.effective_message.reply_text(
+                    f"Текущий день: {day}.\n"
+                    "Введи новый номер дня или '-' чтобы оставить как есть."
+                )
+                return
             existing = quest_repo.get_by_day(day)
             payload = {"mode": "qst_prompt", "day_index": day}
             state.set_state(update.effective_user.id, ADMIN_WIZARD_STEP, payload)
@@ -1558,40 +1657,103 @@ def register_admin_handlers(app, settings: Settings, services: dict):
                 f"День {day}. Введи текст задания." + (f"\nТекущее: {existing['prompt']}" if existing else ""))
             return
 
-        if mode == "qst_prompt":
-            payload["prompt"] = text
-            payload["mode"] = "qst_photo"
+        if mode == "qst_edit_new_day":
+            source_day = int(payload.get("source_day_index") or 0)
+            if text.strip() == "-":
+                new_day = source_day
+            else:
+                if not re.match(r"^\d+$", text):
+                    await update.effective_message.reply_text("Нужен номер дня (число)."); raise ApplicationHandlerStop
+                new_day = int(text)
+                if new_day <= 0:
+                    await update.effective_message.reply_text("Номер дня должен быть больше нуля."); raise ApplicationHandlerStop
+            if new_day != source_day and quest_repo.get_by_day(new_day):
+                await update.effective_message.reply_text("⚠️ На этом дне уже есть задание. Выбери другой день."); raise ApplicationHandlerStop
+            payload["day_index"] = new_day
+            payload["mode"] = "qst_prompt"
             state.set_state(update.effective_user.id, ADMIN_WIZARD_STEP, payload)
             await update.effective_message.reply_text(
-                "Прикрепи фото к заданию или отправь '-' чтобы оставить задание только текстовым."
+                f"День {new_day}. Введи текст задания.\n"
+                f"Текущее: {_short_text(payload.get('prompt'), limit=120)}\n"
+                "Отправь '-' чтобы оставить как есть."
             )
             return
 
+        if mode == "qst_prompt":
+            is_edit = payload.get("source_day_index") is not None
+            if is_edit and text.strip() == "-":
+                payload["prompt"] = str(payload.get("prompt") or "")
+            else:
+                payload["prompt"] = text
+            payload["mode"] = "qst_photo"
+            state.set_state(update.effective_user.id, ADMIN_WIZARD_STEP, payload)
+            if is_edit:
+                await update.effective_message.reply_text(
+                    "Прикрепи фото к заданию.\n"
+                    f"Текущее фото: {_yes_no(bool(payload.get('photo_file_id')))}\n"
+                    "Отправь '-' чтобы оставить как есть или '0' чтобы убрать фото."
+                )
+            else:
+                await update.effective_message.reply_text(
+                    "Прикрепи фото к заданию или отправь '-' чтобы оставить задание только текстовым."
+                )
+            return
+
         if mode == "qst_photo":
+            is_edit = payload.get("source_day_index") is not None
             if text == "-":
+                if not is_edit:
+                    payload["photo_file_id"] = None
+                payload["mode"] = "qst_points"
+                state.set_state(update.effective_user.id, ADMIN_WIZARD_STEP, payload)
+                if is_edit:
+                    await update.effective_message.reply_text(
+                        "Сколько баллов за ответ на задание? (целое число)\n"
+                        f"Текущее: {int(payload.get('points') or 0)}\n"
+                        "Отправь '-' чтобы оставить как есть."
+                    )
+                else:
+                    await update.effective_message.reply_text("Сколько баллов за ответ на задание? (целое число)")
+                return
+            if is_edit and text == "0":
                 payload["photo_file_id"] = None
                 payload["mode"] = "qst_points"
                 state.set_state(update.effective_user.id, ADMIN_WIZARD_STEP, payload)
-                await update.effective_message.reply_text("Сколько баллов за ответ на задание? (целое число)")
+                await update.effective_message.reply_text(
+                    "Сколько баллов за ответ на задание? (целое число)\n"
+                    f"Текущее: {int(payload.get('points') or 0)}\n"
+                    "Отправь '-' чтобы оставить как есть."
+                )
                 return
-            await update.effective_message.reply_text("Нужна фотография или символ '-' для текстового задания.")
+            await update.effective_message.reply_text(
+                "Нужна фотография, '-' (оставить как есть) или '0' (убрать фото)."
+                if is_edit else
+                "Нужна фотография или символ '-' для текстового задания."
+            )
             return
 
         if mode == "qst_points":
-            if not re.match(r"^\d+$", text):
-                await update.effective_message.reply_text("Нужно целое число, например: 1"); raise ApplicationHandlerStop
+            is_edit = payload.get("source_day_index") is not None
+            if is_edit and text.strip() == "-":
+                points = int(payload.get("points") or 0)
+            else:
+                if not re.match(r"^\d+$", text):
+                    await update.effective_message.reply_text("Нужно целое число, например: 1"); raise ApplicationHandlerStop
+                points = int(text)
             day = int(payload["day_index"])
-            points = int(text)
-            old = quest_repo.get_by_day(day) or {}
+            source_day = int(payload.get("source_day_index") or day)
+            old = quest_repo.get_by_day(source_day) or {}
             try:
                 quest_repo.upsert_quest(day, points, payload["prompt"], payload.get("photo_file_id"))
+                if source_day != day:
+                    quest_repo.delete_day(source_day)
             except Exception:
                 await update.effective_message.reply_text("⚠️ Упс, ошибка. Попробуй ещё раз.")
                 raise ApplicationHandlerStop
             state.clear_state(update.effective_user.id)
             await _show_quests_menu(update)
             await update.effective_message.reply_text("✅ Сохранено.")
-            details = [f"• День: {day}"]
+            details = [f"• День: {source_day} → {day}" if source_day != day else f"• День: {day}"]
             for line in (
                 _diff_line("Текст", old.get("prompt"), payload["prompt"], formatter=lambda v: _short_text(v, limit=120)),
                 _diff_line("Баллы", old.get("points"), points, formatter=_int_text),
@@ -1636,6 +1798,25 @@ def register_admin_handlers(app, settings: Settings, services: dict):
                         "\n".join(details),
                     )
                 return
+            if mode == "ext_edit_day":
+                existing = extra_repo.get_by_day(day)
+                if not existing:
+                    await update.effective_message.reply_text("⚠️ Доп. материал на этом дне не найден."); raise ApplicationHandlerStop
+                payload = {
+                    "mode": "ext_edit_new_day",
+                    "source_day_index": day,
+                    "day_index": day,
+                    "content_text": str(existing.get("content_text") or ""),
+                    "link_url": existing.get("link_url"),
+                    "photo_file_id": existing.get("photo_file_id"),
+                    "points": int(existing.get("points") or 0),
+                }
+                state.set_state(update.effective_user.id, ADMIN_WIZARD_STEP, payload)
+                await update.effective_message.reply_text(
+                    f"Текущий день: {day}.\n"
+                    "Введи новый номер дня или '-' чтобы оставить как есть."
+                )
+                return
             existing = extra_repo.get_by_day(day)
             payload = {"mode": "ext_text", "day_index": day}
             state.set_state(update.effective_user.id, ADMIN_WIZARD_STEP, payload)
@@ -1645,42 +1826,119 @@ def register_admin_handlers(app, settings: Settings, services: dict):
             )
             return
 
+        if mode == "ext_edit_new_day":
+            source_day = int(payload.get("source_day_index") or 0)
+            if text.strip() == "-":
+                new_day = source_day
+            else:
+                if not re.match(r"^\d+$", text):
+                    await update.effective_message.reply_text("Нужен номер дня (число)."); raise ApplicationHandlerStop
+                new_day = int(text)
+                if new_day <= 0:
+                    await update.effective_message.reply_text("Номер дня должен быть больше нуля."); raise ApplicationHandlerStop
+            if new_day != source_day and extra_repo.get_by_day(new_day):
+                await update.effective_message.reply_text("⚠️ На этом дне уже есть доп. материал. Выбери другой день."); raise ApplicationHandlerStop
+            payload["day_index"] = new_day
+            payload["mode"] = "ext_text"
+            state.set_state(update.effective_user.id, ADMIN_WIZARD_STEP, payload)
+            await update.effective_message.reply_text(
+                f"День {new_day}. Введи текст доп. материала.\n"
+                f"Текущее: {_short_text(payload.get('content_text'), limit=120)}\n"
+                "Отправь '-' чтобы оставить как есть."
+            )
+            return
+
         if mode == "ext_text":
-            payload["content_text"] = text
+            is_edit = payload.get("source_day_index") is not None
+            if is_edit and text.strip() == "-":
+                payload["content_text"] = str(payload.get("content_text") or "")
+            else:
+                payload["content_text"] = text
             payload["mode"] = "ext_link"
             state.set_state(update.effective_user.id, ADMIN_WIZARD_STEP, payload)
-            await update.effective_message.reply_text("Вставь ссылку (http/https) или отправь '-' если без ссылки.")
+            if is_edit:
+                await update.effective_message.reply_text(
+                    "Вставь ссылку (http/https).\n"
+                    f"Текущая: {_short_text(payload.get('link_url'), limit=120)}\n"
+                    "Отправь '-' чтобы оставить как есть или '0' чтобы убрать ссылку."
+                )
+            else:
+                await update.effective_message.reply_text("Вставь ссылку (http/https) или отправь '-' если без ссылки.")
             return
 
         if mode == "ext_link":
-            if text == "-":
+            is_edit = payload.get("source_day_index") is not None
+            if text == "-" and not is_edit:
+                payload["link_url"] = None
+            elif text == "-" and is_edit:
+                payload["link_url"] = payload.get("link_url")
+            elif is_edit and text == "0":
                 payload["link_url"] = None
             elif text.startswith("http://") or text.startswith("https://"):
                 payload["link_url"] = text
             else:
-                await update.effective_message.reply_text("Нужна ссылка http/https или '-' для пустого значения.")
+                await update.effective_message.reply_text(
+                    "Нужна ссылка http/https, '-' (оставить как есть) или '0' (убрать ссылку)."
+                    if is_edit else
+                    "Нужна ссылка http/https или '-' для пустого значения."
+                )
                 raise ApplicationHandlerStop
             payload["mode"] = "ext_photo"
             state.set_state(update.effective_user.id, ADMIN_WIZARD_STEP, payload)
-            await update.effective_message.reply_text("Прикрепи фото или отправь '-' если без фото.")
+            if is_edit:
+                await update.effective_message.reply_text(
+                    "Прикрепи фото.\n"
+                    f"Текущее фото: {_yes_no(bool(payload.get('photo_file_id')))}\n"
+                    "Отправь '-' чтобы оставить как есть или '0' чтобы убрать фото."
+                )
+            else:
+                await update.effective_message.reply_text("Прикрепи фото или отправь '-' если без фото.")
             return
 
         if mode == "ext_photo":
+            is_edit = payload.get("source_day_index") is not None
             if text == "-":
+                if not is_edit:
+                    payload["photo_file_id"] = None
+                payload["mode"] = "ext_points"
+                state.set_state(update.effective_user.id, ADMIN_WIZARD_STEP, payload)
+                if is_edit:
+                    await update.effective_message.reply_text(
+                        "Сколько баллов за просмотр? (целое число, можно 0)\n"
+                        f"Текущее: {int(payload.get('points') or 0)}\n"
+                        "Отправь '-' чтобы оставить как есть."
+                    )
+                else:
+                    await update.effective_message.reply_text("Сколько баллов за просмотр? (целое число, можно 0)")
+                return
+            if is_edit and text == "0":
                 payload["photo_file_id"] = None
                 payload["mode"] = "ext_points"
                 state.set_state(update.effective_user.id, ADMIN_WIZARD_STEP, payload)
-                await update.effective_message.reply_text("Сколько баллов за просмотр? (целое число, можно 0)")
+                await update.effective_message.reply_text(
+                    "Сколько баллов за просмотр? (целое число, можно 0)\n"
+                    f"Текущее: {int(payload.get('points') or 0)}\n"
+                    "Отправь '-' чтобы оставить как есть."
+                )
                 return
-            await update.effective_message.reply_text("Нужна фотография или символ '-' для варианта без фото.")
+            await update.effective_message.reply_text(
+                "Нужна фотография, '-' (оставить как есть) или '0' (убрать фото)."
+                if is_edit else
+                "Нужна фотография или символ '-' для варианта без фото."
+            )
             return
 
         if mode == "ext_points":
-            if not re.match(r"^\d+$", text):
-                await update.effective_message.reply_text("Нужно целое число, например: 0"); raise ApplicationHandlerStop
+            is_edit = payload.get("source_day_index") is not None
+            if is_edit and text.strip() == "-":
+                points = int(payload.get("points") or 0)
+            else:
+                if not re.match(r"^\d+$", text):
+                    await update.effective_message.reply_text("Нужно целое число, например: 0"); raise ApplicationHandlerStop
+                points = int(text)
             day = int(payload["day_index"])
-            points = int(text)
-            old = extra_repo.get_by_day(day) or {}
+            source_day = int(payload.get("source_day_index") or day)
+            old = extra_repo.get_by_day(source_day) or {}
             try:
                 extra_repo.upsert(
                     day_index=day,
@@ -1690,13 +1948,15 @@ def register_admin_handlers(app, settings: Settings, services: dict):
                     photo_file_id=payload.get("photo_file_id"),
                     is_active=True,
                 )
+                if source_day != day:
+                    extra_repo.delete_day(source_day)
             except Exception:
                 await update.effective_message.reply_text("⚠️ Упс, ошибка. Попробуй ещё раз.")
                 raise ApplicationHandlerStop
             state.clear_state(update.effective_user.id)
             await _show_extras_menu(update)
             await update.effective_message.reply_text("✅ Сохранено.")
-            details = [f"• День: {day}"]
+            details = [f"• День: {source_day} → {day}" if source_day != day else f"• День: {day}"]
             for line in (
                 _diff_line("Текст", old.get("content_text"), payload["content_text"], formatter=lambda v: _short_text(v, limit=120)),
                 _diff_line("Баллы", old.get("points"), points, formatter=_int_text),
@@ -1789,49 +2049,76 @@ def register_admin_handlers(app, settings: Settings, services: dict):
                 "id": qid,
                 "qtype": str(item.get("qtype") or "manual"),
                 "day_index": item.get("day_index"),
+                "question": str(item.get("question") or ""),
+                "use_in_charts": bool(item.get("use_in_charts")),
+                "points": int(item.get("points") or 0),
             }
             state.set_state(update.effective_user.id, ADMIN_WIZARD_STEP, payload)
-            await update.effective_message.reply_text(f"Текущий вопрос:\n{item['question']}\n\nВведи новый вопрос.")
+            await update.effective_message.reply_text(
+                f"Текущий вопрос:\n{payload['question']}\n\n"
+                "Введи новый вопрос или отправь '-' чтобы оставить как есть."
+            )
             return
 
         if mode == "q_edit_question":
-            payload["question"] = text
+            if text.strip() != "-":
+                payload["question"] = text
             payload["mode"] = "q_edit_day"
             state.set_state(update.effective_user.id, ADMIN_WIZARD_STEP, payload)
             current_day = payload.get("day_index")
             day_hint = f"{int(current_day)}" if current_day is not None else "не задан"
-            await update.effective_message.reply_text(f"Текущий день: {day_hint}\nВведи новый номер дня (целое число).")
+            await update.effective_message.reply_text(
+                f"Текущий день: {day_hint}\n"
+                "Введи новый номер дня (целое число) или '-' чтобы оставить как есть."
+            )
             return
 
         if mode == "q_edit_day":
-            if not re.match(r"^\d+$", text):
-                await update.effective_message.reply_text("Нужен номер дня (целое число)."); raise ApplicationHandlerStop
-            day = int(text)
-            if day <= 0:
-                await update.effective_message.reply_text("Номер дня должен быть больше нуля."); raise ApplicationHandlerStop
+            if text.strip() == "-":
+                day = payload.get("day_index")
+            else:
+                if not re.match(r"^\d+$", text):
+                    await update.effective_message.reply_text("Нужен номер дня (целое число)."); raise ApplicationHandlerStop
+                day = int(text)
+                if day <= 0:
+                    await update.effective_message.reply_text("Номер дня должен быть больше нуля."); raise ApplicationHandlerStop
             payload["day_index"] = day
             payload["mode"] = "q_edit_charts"
             state.set_state(update.effective_user.id, ADMIN_WIZARD_STEP, payload)
-            await update.effective_message.reply_text("Учитывать в диаграммах? (Да/Нет)", reply_markup=kb_yes_no())
+            await update.effective_message.reply_text(
+                f"Учитывать в диаграммах? (Да/Нет)\nТекущее: {_yes_no(payload.get('use_in_charts'))}\n"
+                "Отправь '-' чтобы оставить как есть.",
+                reply_markup=kb_yes_no(),
+            )
             return
 
         if mode == "q_edit_charts":
             t = text.lower()
-            if t not in ("да", "нет"):
-                await update.effective_message.reply_text("Нужно 'Да' или 'Нет'.", reply_markup=kb_yes_no()); raise ApplicationHandlerStop
-            payload["use_in_charts"] = (t == "да")
+            if t == "-":
+                payload["use_in_charts"] = bool(payload.get("use_in_charts"))
+            else:
+                if t not in ("да", "нет"):
+                    await update.effective_message.reply_text("Нужно 'Да' или 'Нет'.", reply_markup=kb_yes_no()); raise ApplicationHandlerStop
+                payload["use_in_charts"] = (t == "да")
             payload["mode"] = "q_edit_points"
             state.set_state(update.effective_user.id, ADMIN_WIZARD_STEP, payload)
-            await update.effective_message.reply_text("Сколько баллов? (целое число)")
+            await update.effective_message.reply_text(
+                f"Сколько баллов? (целое число)\nТекущее: {int(payload.get('points') or 0)}\n"
+                "Отправь '-' чтобы оставить как есть."
+            )
             return
 
         if mode == "q_edit_points":
-            if not re.match(r"^\d+$", text):
-                await update.effective_message.reply_text("Нужно целое число, например: 1"); raise ApplicationHandlerStop
+            if text.strip() == "-":
+                points = int(payload.get("points") or 0)
+            else:
+                if not re.match(r"^\d+$", text):
+                    await update.effective_message.reply_text("Нужно целое число, например: 1"); raise ApplicationHandlerStop
+                points = int(text)
             qid = int(payload["id"])
             old = qsvc.get(qid) or {}
-            day_index = int(payload.get("day_index") or 1)
-            points = int(text)
+            day_raw = payload.get("day_index")
+            day_index = int(day_raw) if day_raw is not None else None
             qsvc.update(
                 qid,
                 payload["question"],
