@@ -351,37 +351,99 @@ def register_admin_handlers(app, settings: Settings, services: dict):
     async def _show_admin_home(update: Update):
         uid = update.effective_user.id
         _set_menu(uid, "home")
-        await update.effective_message.reply_text("🛠 Админка", reply_markup=kb_admin_home(_is_owner(update)))
+        await update.effective_message.reply_text(
+            "🛠 Админка\n\n"
+            "Разделы:\n"
+            "• 📚 Лекции — контент уроков по дням\n"
+            "• 📝 Задания — практики по дням\n"
+            "• 🧩 Доп. материалы — необязательные материалы\n"
+            "• 📋 Анкеты — анкеты по дням и рассылки\n"
+            "• 📈 Аналитика — отчёты за 1/7/30 дней\n"
+            "• 🏆 Ачивки — правила достижений\n"
+            "• 🆘 Тикеты — обращения пользователей\n"
+            "• 👥 Админы — управление ролями (owner)",
+            reply_markup=kb_admin_home(_is_owner(update)),
+        )
 
     async def _show_lessons_menu(update: Update):
         uid = update.effective_user.id
         _set_menu(uid, "lessons")
-        await update.effective_message.reply_text("📚 Лекции", reply_markup=kb_admin_actions(False))
+        await update.effective_message.reply_text(
+            "📚 Лекции\n\n"
+            "Доступные действия:\n"
+            "• 📋 Список\n"
+            "• ➕ Создать\n"
+            "• ✏️ Редактировать\n"
+            "• 🗑 Удалить",
+            reply_markup=kb_admin_actions(False),
+        )
 
     async def _show_quests_menu(update: Update):
         uid = update.effective_user.id
         _set_menu(uid, "quests")
-        await update.effective_message.reply_text("📝 Задания", reply_markup=kb_admin_actions(False))
+        await update.effective_message.reply_text(
+            "📝 Задания\n\n"
+            "Доступные действия:\n"
+            "• 📋 Список\n"
+            "• ➕ Создать\n"
+            "• ✏️ Редактировать\n"
+            "• 🗑 Удалить",
+            reply_markup=kb_admin_actions(False),
+        )
 
     async def _show_extras_menu(update: Update):
         uid = update.effective_user.id
         _set_menu(uid, "extra")
-        await update.effective_message.reply_text("🧩 Доп. материалы", reply_markup=kb_admin_actions(False))
+        await update.effective_message.reply_text(
+            "🧩 Доп. материалы\n\n"
+            "Доступные действия:\n"
+            "• 📋 Список\n"
+            "• ➕ Создать\n"
+            "• ✏️ Редактировать\n"
+            "• 🗑 Удалить",
+            reply_markup=kb_admin_actions(False),
+        )
 
     async def _show_q_menu(update: Update):
         uid = update.effective_user.id
         _set_menu(uid, "questionnaires")
-        await update.effective_message.reply_text("📋 Анкеты", reply_markup=kb_admin_actions(True))
+        await update.effective_message.reply_text(
+            "📋 Анкеты\n\n"
+            "Доступные действия:\n"
+            "• 📋 Список\n"
+            "• ➕ Создать\n"
+            "• ✏️ Редактировать\n"
+            "• 🗑 Удалить\n"
+            "• 🎲 Рандомная анкета всем",
+            reply_markup=kb_admin_actions(True),
+        )
 
     async def _show_achievements_menu(update: Update):
         uid = update.effective_user.id
         _set_menu(uid, "achievements")
-        await update.effective_message.reply_text("🏆 Ачивки", reply_markup=kb_admin_actions(False))
+        await update.effective_message.reply_text(
+            "🏆 Ачивки\n\n"
+            "Доступные действия:\n"
+            "• 📋 Список\n"
+            "• ➕ Создать\n"
+            "• ✏️ Редактировать\n"
+            "• 🗑 Удалить",
+            reply_markup=kb_admin_actions(False),
+        )
 
     async def _show_admins_menu(update: Update):
         uid = update.effective_user.id
         _set_menu(uid, "admins")
-        await update.effective_message.reply_text("👥 Управление админами", reply_markup=kb_admin_admins())
+        await update.effective_message.reply_text(
+            "👥 Управление админами\n\n"
+            "Что можно:\n"
+            "• Список админов\n"
+            "• Добавить admin\n"
+            "• Выдать owner\n"
+            "• Понизить owner до admin\n"
+            "• Удалить из админов",
+            reply_markup=kb_admin_admins(),
+        )
 
     ACH_METRIC_OPTIONS = [
         ("Баллы", "points"),
@@ -595,8 +657,11 @@ def register_admin_handlers(app, settings: Settings, services: dict):
         _set_menu(uid, "analytics", {"days": safe_days})
         if not show_report:
             await update.effective_message.reply_text(
-                "\U0001F4C8 \u0410\u043d\u0430\u043b\u0438\u0442\u0438\u043a\u0430\n"
-                "\u0412\u044b\u0431\u0435\u0440\u0438 \u043f\u0435\u0440\u0438\u043e\u0434:",
+                "📈 Аналитика\n\n"
+                "Выбери период отчёта:\n"
+                "• 1 день — оперативная проверка\n"
+                "• 7 дней — недельный срез\n"
+                "• 30 дней — общая динамика",
                 reply_markup=kb_admin_analytics(),
             )
             return
