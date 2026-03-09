@@ -550,7 +550,25 @@ def register_user_handlers(app, settings: Settings, services: dict):
         else:
             item = parsed
 
-        message_id = _stored_material_message_id(uid, item)
+        message_id = None
+        if item.get("kind") == "questionnaire":
+            st_any = user_svc.get_step(uid) or {}
+            if st_any.get("step") == "wait_q_comment":
+                await context.bot.send_message(
+                    chat_id=uid,
+                    text="✍️ Ты уже выбрал оценку. Напиши короткий комментарий одним сообщением.",
+                )
+                return
+        elif item.get("kind") == "quest":
+            st_any = user_svc.get_step(uid) or {}
+            if st_any.get("step") == "last_quest":
+                await context.bot.send_message(
+                    chat_id=uid,
+                    text="✍️ Форма ответа уже открыта. Напиши ответ на задание одним сообщением.",
+                )
+                return
+        else:
+            message_id = _stored_material_message_id(uid, item)
         if message_id:
             try:
                 await context.bot.send_message(
@@ -1143,16 +1161,16 @@ def register_user_handlers(app, settings: Settings, services: dict):
             texts.REMINDERS_DELETE,
         }
         if st_any and st_any.get("step") == "wait_q_comment":
-            if text == texts.BTN_BACK:
-                user_svc.set_step(uid, None)
-                await update.effective_message.reply_text(
-                    "Ок, вернул в главное меню.",
-                    reply_markup=menus.kb_main(_is_admin(uid)),
-                )
-                raise ApplicationHandlerStop
             if text in nav_texts:
                 await update.effective_message.reply_text(
                     "Сначала напиши короткий комментарий к анкете одним сообщением.",
+                )
+                raise ApplicationHandlerStop
+            return
+        if st_any and st_any.get("step") == "last_quest":
+            if text in nav_texts:
+                await update.effective_message.reply_text(
+                    "Сначала отправь ответ на задание одним сообщением.",
                 )
                 raise ApplicationHandlerStop
             return
@@ -1907,16 +1925,16 @@ def register_user_handlers(app, settings: Settings, services: dict):
             texts.REMINDERS_DELETE,
         }
         if st_any and st_any.get("step") == "wait_q_comment":
-            if text == texts.BTN_BACK:
-                user_svc.set_step(uid, None)
-                await update.effective_message.reply_text(
-                    "Ок, вернул в главное меню.",
-                    reply_markup=menus.kb_main(_is_admin(uid)),
-                )
-                raise ApplicationHandlerStop
             if text in nav_texts:
                 await update.effective_message.reply_text(
                     "Сначала напиши короткий комментарий к анкете одним сообщением.",
+                )
+                raise ApplicationHandlerStop
+            return
+        if st_any and st_any.get("step") == "last_quest":
+            if text in nav_texts:
+                await update.effective_message.reply_text(
+                    "Сначала отправь ответ на задание одним сообщением.",
                 )
                 raise ApplicationHandlerStop
             return

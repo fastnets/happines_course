@@ -50,14 +50,36 @@ class QuestionnaireService:
     def delete(self, qid: int) -> bool:
         return self.q.delete(qid)
 
+    @staticmethod
+    def _score_key(qid: int) -> str:
+        return f"q:{qid}"
+
+    def _add_score_points_once(self, user_id: int, qid: int, points: int) -> bool:
+        source_type = "questionnaire_score"
+        source_key = self._score_key(qid)
+        has_entry = getattr(self.points, "has_entry", None)
+        if callable(has_entry) and has_entry(user_id, source_type, source_key):
+            return False
+        self.points.add_points(user_id, source_type, source_key, points)
+        return True
+
     def start_comment_flow(self, user_id: int, qid: int, score: int, points: int):
-        self.points.add_points(user_id, "questionnaire_score", f"q:{qid}", points)
         self.state.set_state(user_id, STEP_WAIT_Q_COMMENT, {"questionnaire_id": qid, "score": score})
 
-    def submit_score_only(self, user_id: int, qid: int, score: int, points: int):
-        self.points.add_points(user_id, "questionnaire_score", f"q:{qid}", points)
+    def submit_score_only(self, user_id: int, qid: int, score: int, points: int) -> bool:
+        if self.q.has_user_response(user_id, qid):
+            return False
+        self._add_score_points_once(user_id, qid, points)
         self.r.add(qid, user_id, score, "")
+        return True
 
-    def save_comment(self, user_id: int, qid: int, score: int, comment: str):
+    def save_comment(self, user_id: int, qid: int, score: int, comment: str) -> bool:
+        if self.q.has_user_response(user_id, qid):
+            self.state.clear_state(user_id)
+            return False
+        qrow = self.q.get(qid)
+        points = int((qrow or {}).get("points") or 0)
+        self._add_score_points_once(user_id, qid, points)
         self.r.add(qid, user_id, score, comment)
         self.state.clear_state(user_id)
+        return True
