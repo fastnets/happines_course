@@ -61,17 +61,27 @@ def register_questionnaire_handlers(app, settings, services):
         if not item:
             await q.edit_message_reply_markup(reply_markup=None)
             return
+        if qsvc.has_response(q.from_user.id, qid):
+            await q.edit_message_reply_markup(reply_markup=None)
+            await context.bot.send_message(chat_id=q.from_user.id, text="✅ Эта анкета уже заполнена.")
+            return
         points = int(item["points"])
         is_optional = (item.get("qtype") == "broadcast_optional")
         if is_optional:
-            qsvc.submit_score_only(q.from_user.id, qid, score, points)
+            created = qsvc.submit_score_only(q.from_user.id, qid, score, points)
         else:
             qsvc.start_comment_flow(q.from_user.id, qid, score, points)
         await q.edit_message_reply_markup(reply_markup=None)
         if is_optional:
-            await context.bot.send_message(chat_id=q.from_user.id, text=f"Спасибо! Оценка: {score}. +{points} баллов")
+            if created:
+                await context.bot.send_message(chat_id=q.from_user.id, text=f"Спасибо! Оценка: {score}. +{points} баллов")
+            else:
+                await context.bot.send_message(chat_id=q.from_user.id, text="✅ Эта анкета уже заполнена.")
         else:
-            await context.bot.send_message(chat_id=q.from_user.id, text=f"Спасибо! Оценка: {score}. +{points} баллов\n\nТеперь напиши коротко: почему так?")
+            await context.bot.send_message(
+                chat_id=q.from_user.id,
+                text=f"Спасибо! Оценка: {score}.\n\nТеперь напиши коротко: почему так?\nБаллы начислятся после комментария.",
+            )
         await _notify_achievements(q.from_user.id, context)
 
     async def on_comment_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -88,8 +98,16 @@ def register_questionnaire_handlers(app, settings, services):
         score = int(payload.get("score", 0))
         if qid <= 0 or score <= 0:
             return
-        qsvc.save_comment(update.effective_user.id, qid, score, text)
-        await update.effective_message.reply_text("✅ Комментарий сохранён!")
+        saved = qsvc.save_comment(update.effective_user.id, qid, score, text)
+        if not saved:
+            await update.effective_message.reply_text("✅ Ответ по этой анкете уже сохранён.")
+            return
+        item = qsvc.get(qid) or {}
+        points = int(item.get("points") or 0)
+        if points > 0:
+            await update.effective_message.reply_text(f"✅ Комментарий сохранён! +{points} баллов")
+        else:
+            await update.effective_message.reply_text("✅ Комментарий сохранён!")
         await _notify_achievements(update.effective_user.id, context)
 
     app.add_handler(CommandHandler("qsend", qsend))

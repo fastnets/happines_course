@@ -76,10 +76,11 @@ class MoodServiceTests(unittest.TestCase):
         ]
 
         text = svc.chart_text(10, days=2)
-        self.assertIn("😊 Настроение за 2 дн.", text)
-        self.assertIn("• 23.02: █████ (5)", text)
-        self.assertIn("• 22.02: ███ (3)", text)
-        self.assertIn("Среднее по заполненным дням: 4.00", text)
+        self.assertIn("\U0001F60A", text)
+        self.assertIn("23.02: \U0001F601 \u2588\u2588\u2588\u2588\u2588 (5)", text)
+        self.assertIn("22.02: \U0001F610 \u2588\u2588\u2588 (3)", text)
+        self.assertIn("4.00", text)
+        self.assertIn("\u2639\ufe0f 0 | \U0001F641 0 | \U0001F610 1 | \U0001F604 0 | \U0001F601 1", text)
 
 
 if __name__ == "__main__":
