@@ -231,10 +231,10 @@ class ProgressAndAchievementTests(unittest.TestCase):
         self.assertEqual(len(prof["weekly"]), 4)
 
         txt = svc.progress_report(user_id=202)
-        self.assertIn("Серия (streak): 3 дн.", txt)
+        self.assertIn("Серия: 3 дн.", txt)
         self.assertIn("Лекции: 4/5 (80.0%)", txt)
         self.assertIn("Задания: 3/4 (75.0%)", txt)
-        self.assertIn("Привычки: done=3, skip=1", txt)
+        self.assertIn("Привычки: выполненные=3, пропущенные=1", txt)
         self.assertIn("Ачивки: 1", txt)
         self.assertIn("Динамика по неделям:", txt)
 

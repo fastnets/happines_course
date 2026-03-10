@@ -750,7 +750,7 @@ def register_admin_handlers(app, settings: Settings, services: dict):
         tnum = _ticket_number(row)
         return (
             f"• №{tnum} (id={tid}) [{_ticket_status_label(row.get('status'))}] "
-            f"user={row.get('user_id')} — {txt}"
+            f"пользователь={row.get('user_id')} — {txt}"
         )
 
     def _ticket_details(row: dict) -> str:
@@ -759,7 +759,7 @@ def register_admin_handlers(app, settings: Settings, services: dict):
         base = [
             f"🆘 Тикет №{tnum} (id={tid})",
             f"Статус: {_ticket_status_label(row.get('status'))}",
-            f"user_id: {row.get('user_id')}",
+            f"ID пользователя: {row.get('user_id')}",
             f"Создан: {row.get('created_at')}",
             "",
             "Сообщение:",
@@ -805,7 +805,7 @@ def register_admin_handlers(app, settings: Settings, services: dict):
     def _resolve_user_ref(raw: str) -> tuple[int | None, str | None]:
         val = (raw or "").strip()
         if not val:
-            return None, "Укажи @username или user_id."
+            return None, "Укажи @username или ID пользователя."
         if val.startswith("@"):
             uname = val[1:].strip()
             if not uname:
@@ -817,12 +817,12 @@ def register_admin_handlers(app, settings: Settings, services: dict):
         if re.match(r"^\d+$", val):
             uid = int(val)
             if uid <= 0:
-                return None, "Некорректный user_id."
+                return None, "Некорректный ID пользователя."
             row = user_svc.users.get_user(uid)
             if not row:
-                return None, "Такого user_id нет в базе. Пусть пользователь сначала запустит бота /start."
+                return None, "Такого ID пользователя нет в базе. Пусть пользователь сначала запустит бота /start."
             return uid, None
-        return None, "Формат: @username или user_id."
+        return None, "Формат: @username или ID пользователя."
 
     async def _send_admins_list(update: Update, *, reply_markup=None):
         if not admin_svc or not hasattr(admin_svc, "list_admins"):
@@ -852,7 +852,7 @@ def register_admin_handlers(app, settings: Settings, services: dict):
             return
         target_uid = _parse_target_uid(context)
         if not target_uid:
-            await update.effective_message.reply_text("Формат: /admin_add <user_id>")
+            await update.effective_message.reply_text("Формат: /admin_add <id>")
             return
         before_role = _admin_role_by_uid(target_uid)
         ok, msg = admin_svc.grant_admin(update.effective_user.id, target_uid)
@@ -875,7 +875,7 @@ def register_admin_handlers(app, settings: Settings, services: dict):
                     [
                         f"• Пользователь: {_user_label(target_uid)}",
                         f"• Роль: {_admin_role_label(before_role)} → {_admin_role_label(after_role)}",
-                        f"• Invite-статус: {invite_status or '—'}",
+                        f"• Статус приглашения: {invite_status or '—'}",
                     ]
                 ),
             )
@@ -886,7 +886,7 @@ def register_admin_handlers(app, settings: Settings, services: dict):
             return
         target_uid = _parse_target_uid(context)
         if not target_uid:
-            await update.effective_message.reply_text("Формат: /admin_remove <user_id>")
+            await update.effective_message.reply_text("Формат: /admin_remove <id>")
             return
         before_role = _admin_role_by_uid(target_uid)
         ok, msg = admin_svc.remove_admin(update.effective_user.id, target_uid)
@@ -1326,19 +1326,19 @@ def register_admin_handlers(app, settings: Settings, services: dict):
                 raise ApplicationHandlerStop
             if text == BTN_ADM_ADD:
                 state.set_state(uid, ADMIN_WIZARD_STEP, {"mode": "adm_add_target"})
-                await update.effective_message.reply_text("Введи @username или user_id для добавления в admin.")
+                await update.effective_message.reply_text("Введи @username или ID пользователя для добавления в admin.")
                 raise ApplicationHandlerStop
             if text == BTN_ADM_PROMOTE:
                 state.set_state(uid, ADMIN_WIZARD_STEP, {"mode": "adm_promote_target"})
-                await update.effective_message.reply_text("Введи @username или user_id для выдачи роли owner.")
+                await update.effective_message.reply_text("Введи @username или ID пользователя для выдачи роли owner.")
                 raise ApplicationHandlerStop
             if text == BTN_ADM_DEMOTE:
                 state.set_state(uid, ADMIN_WIZARD_STEP, {"mode": "adm_demote_target"})
-                await update.effective_message.reply_text("Введи @username или user_id для понижения до admin.")
+                await update.effective_message.reply_text("Введи @username или ID пользователя для понижения до admin.")
                 raise ApplicationHandlerStop
             if text == BTN_ADM_REMOVE:
                 state.set_state(uid, ADMIN_WIZARD_STEP, {"mode": "adm_remove_target"})
-                await update.effective_message.reply_text("Введи @username или user_id для удаления из админов.")
+                await update.effective_message.reply_text("Введи @username или ID пользователя для удаления из админов.")
                 raise ApplicationHandlerStop
 
         # Stop further handlers while admin menu is active.
@@ -1563,19 +1563,19 @@ def register_admin_handlers(app, settings: Settings, services: dict):
                 raise ApplicationHandlerStop
             if text == BTN_ADM_ADD:
                 state.set_state(uid, ADMIN_WIZARD_STEP, {"mode": "adm_add_target"})
-                await update.effective_message.reply_text("Введи @username или user_id для добавления в admin.")
+                await update.effective_message.reply_text("Введи @username или ID пользователя для добавления в admin.")
                 raise ApplicationHandlerStop
             if text == BTN_ADM_PROMOTE:
                 state.set_state(uid, ADMIN_WIZARD_STEP, {"mode": "adm_promote_target"})
-                await update.effective_message.reply_text("Введи @username или user_id для выдачи роли owner.")
+                await update.effective_message.reply_text("Введи @username или ID пользователя для выдачи роли owner.")
                 raise ApplicationHandlerStop
             if text == BTN_ADM_DEMOTE:
                 state.set_state(uid, ADMIN_WIZARD_STEP, {"mode": "adm_demote_target"})
-                await update.effective_message.reply_text("Введи @username или user_id для понижения до admin.")
+                await update.effective_message.reply_text("Введи @username или ID пользователя для понижения до admin.")
                 raise ApplicationHandlerStop
             if text == BTN_ADM_REMOVE:
                 state.set_state(uid, ADMIN_WIZARD_STEP, {"mode": "adm_remove_target"})
-                await update.effective_message.reply_text("Введи @username или user_id для удаления из админов.")
+                await update.effective_message.reply_text("Введи @username или ID пользователя для удаления из админов.")
                 raise ApplicationHandlerStop
 
         # --- Lessons wizard ---
@@ -2796,7 +2796,7 @@ def register_admin_handlers(app, settings: Settings, services: dict):
                             [
                                 f"• Пользователь: {_user_label(target_uid)}",
                                 f"• Роль: {_admin_role_label(before_role)} → {_admin_role_label(after_role)}",
-                                f"• Invite-статус: {invite_status or '—'}",
+                                f"• Статус приглашения: {invite_status or '—'}",
                             ]
                         ),
                     )
@@ -2848,7 +2848,7 @@ def register_admin_handlers(app, settings: Settings, services: dict):
                         [
                             f"• Пользователь: {_user_label(target_uid)}",
                             f"• Роль: {_admin_role_label(before_role)} → {_admin_role_label(after_role)}",
-                            f"• Invite-статус: {invite_status or '—'}",
+                            f"• Статус приглашения: {invite_status or '—'}",
                         ]
                     ),
                 )

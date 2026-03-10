@@ -92,11 +92,11 @@ class AdminAnalyticsService:
         lines = [
             f"📬 Доставка ({self._period_label(days)})",
             "",
-            f"• Всего jobs: {total}",
-            f"• Sent: {sent}",
-            f"• Pending: {pending}",
-            f"• Failed: {failed}",
-            f"• Cancelled: {cancelled}",
+            f"• Всего задач: {total}",
+            f"• Отправлено: {sent}",
+            f"• В очереди: {pending}",
+            f"• С ошибкой: {failed}",
+            f"• Отменено: {cancelled}",
         ]
         kinds = d.get("kinds") or []
         if kinds:
@@ -109,7 +109,7 @@ class AdminAnalyticsService:
                 k_failed = self._safe_int(k.get("failed"))
                 k_pending = self._safe_int(k.get("pending"))
                 lines.append(
-                    f"• {kind}: {k_sent}/{k_total} sent, failed={k_failed}, pending={k_pending}"
+                    f"• {kind}: отправлено {k_sent}/{k_total}, с ошибкой={k_failed}, в очереди={k_pending}"
                 )
         return "\n".join(lines)
 
@@ -159,7 +159,7 @@ class AdminAnalyticsService:
             "",
             f"• Ответов: {responses_total}",
             f"• Уникальных пользователей: {users_total}",
-            f"• Средний score: {avg_score:.2f}",
+            f"• Средняя оценка: {avg_score:.2f}",
         ]
 
         top_rows = d.get("top_rows") or []
@@ -173,7 +173,7 @@ class AdminAnalyticsService:
                 qtext = (r.get("question") or "").replace("\n", " ").strip()
                 if len(qtext) > 54:
                     qtext = qtext[:51] + "..."
-                lines.append(f"• #{qid}: ответов={responses}, avg={avg:.2f} — {qtext}")
+                lines.append(f"• #{qid}: ответов={responses}, средняя оценка={avg:.2f} — {qtext}")
         return "\n".join(lines)
 
     def reminders_report(self, days: int) -> str:
@@ -190,9 +190,11 @@ class AdminAnalyticsService:
 
         return (
             f"⏰ Ремайндеры ({self._period_label(days)})\n\n"
-            f"• Personal reminders: created={personal_created}, sent={personal_sent}, pending={personal_pending}, cancelled={personal_cancelled}\n"
-            f"• Habits: created={habits_created}, sent={habit_sent}, done={habit_done}, skipped={habit_skipped}\n"
-            f"• Daily reminders sent: {daily_sent}"
+            f"• Личные напоминания: создано={personal_created}, отправлено={personal_sent}, "
+            f"в очереди={personal_pending}, отменено={personal_cancelled}\n"
+            f"• Привычки: создано={habits_created}, отправлено={habit_sent}, "
+            f"выполнено={habit_done}, пропущено={habit_skipped}\n"
+            f"• Дневные напоминания: отправлено={daily_sent}"
         )
 
     def statistics_report(self, days: int) -> str:
@@ -248,5 +250,5 @@ class AdminAnalyticsService:
             f"• Активные пользователи: {active_users}{active_tail}\n"
             f"• Средний прогресс: {avg_progress_pct:.1f}%\n"
             f"• Процент выполнения: {completion_pct:.1f}%\n"
-            f"• Результаты анкет: ответов={responses_total}, средний score={avg_score:.2f}"
+            f"• Результаты анкет: ответов={responses_total}, средняя оценка={avg_score:.2f}"
         )

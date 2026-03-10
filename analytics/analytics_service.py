@@ -188,7 +188,7 @@ class AnalyticsService:
         lines = [
             "📊 Мой прогресс",
             f"Баллы: {prof['points']}",
-            f"Серия (streak): {prof['streak']} дн.",
+            f"Серия: {prof['streak']} дн.",
             f"Завершено дней курса: {prof['done_days']}",
             (
                 "Лекции: "
@@ -200,7 +200,7 @@ class AnalyticsService:
                 f"{prof['quests_answered']}/{prof['quests_sent']} "
                 f"({prof['quests_pct']:.1f}%)"
             ),
-            f"Привычки: done={prof['habit_done']}, skip={prof['habit_skipped']}",
+            f"Привычки: выполненные={prof['habit_done']}, пропущенные={prof['habit_skipped']}",
             f"Анкеты: {prof['questionnaire_count']}",
             f"Ачивки: {prof['achievements_total']}",
         ]
@@ -221,7 +221,7 @@ class AnalyticsService:
             for row in weekly:
                 avg = "-" if row.get("avg_score") is None else f"{float(row['avg_score']):.2f}"
                 lines.append(
-                    f"• {row['label']}: баллы={row['points']}, done={row['done_days']}, анкеты avg={avg}"
+                    f"• {row['label']}: баллы={row['points']}, завершено дней={row['done_days']}, средняя анкета={avg}"
                 )
 
         return "\n".join(lines)
