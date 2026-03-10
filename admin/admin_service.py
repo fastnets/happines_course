@@ -135,7 +135,7 @@ class AdminService:
         actor = int(actor_id)
         target = int(target_user_id)
         if target <= 0:
-            return False, "Некорректный user_id."
+            return False, "Некорректный ID пользователя."
         if not self.is_owner(actor):
             return False, "Только owner может управлять админами."
         if self.admins.is_owner(target):
@@ -144,26 +144,26 @@ class AdminService:
             self.admins.upsert(target, role="admin")
         except Exception:
             return False, "Не удалось выдать роль admin. Убедись, что пользователь уже запускал бота."
-        return True, f"user_id={target} теперь admin."
+        return True, f"Пользователь {target} теперь admin."
 
     def grant_owner(self, actor_id: int, target_user_id: int) -> tuple[bool, str]:
         actor = int(actor_id)
         target = int(target_user_id)
         if target <= 0:
-            return False, "Некорректный user_id."
+            return False, "Некорректный ID пользователя."
         if not self.is_owner(actor):
             return False, "Только owner может назначать owner."
         try:
             self.admins.upsert(target, role="owner")
         except Exception:
             return False, "Не удалось выдать роль owner. Убедись, что пользователь уже запускал бота."
-        return True, f"user_id={target} теперь owner."
+        return True, f"Пользователь {target} теперь owner."
 
     def demote_owner_to_admin(self, actor_id: int, target_user_id: int) -> tuple[bool, str]:
         actor = int(actor_id)
         target = int(target_user_id)
         if target <= 0:
-            return False, "Некорректный user_id."
+            return False, "Некорректный ID пользователя."
         if not self.is_owner(actor):
             return False, "Только owner может менять роль owner."
         if not self.admins.is_admin(target):
@@ -174,13 +174,13 @@ class AdminService:
             self.admins.upsert(target, role="admin")
         except Exception:
             return False, "Не удалось изменить роль."
-        return True, f"user_id={target} теперь admin."
+        return True, f"Пользователь {target} теперь admin."
 
     def remove_admin(self, actor_id: int, target_user_id: int) -> tuple[bool, str]:
         actor = int(actor_id)
         target = int(target_user_id)
         if target <= 0:
-            return False, "Некорректный user_id."
+            return False, "Некорректный ID пользователя."
         if not self.is_owner(actor):
             return False, "Только owner может удалять админов."
         if not self.admins.is_admin(target):
@@ -191,7 +191,7 @@ class AdminService:
             self.admins.remove(target)
         except Exception:
             return False, "Не удалось удалить админа."
-        return True, f"user_id={target} удалён из админов."
+        return True, f"Пользователь {target} удалён из админов."
 
     def set_role(self, actor_id: int, target_user_id: int, role: str) -> tuple[bool, str]:
         role_s = (role or "").strip().lower()

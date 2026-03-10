@@ -78,8 +78,8 @@ class AdminAnalyticsServiceTests(unittest.TestCase):
 
     def test_delivery_report_contains_kind_breakdown(self):
         txt = self._svc().delivery_report(7)
-        self.assertIn("Всего jobs: 16", txt)
-        self.assertIn("day_lesson: 4/5 sent", txt)
+        self.assertIn("Всего задач: 16", txt)
+        self.assertIn("day_lesson: отправлено 4/5", txt)
 
     def test_content_report_formats_day_stats(self):
         txt = self._svc().content_report(7)
@@ -91,7 +91,7 @@ class AdminAnalyticsServiceTests(unittest.TestCase):
         qtxt = svc.questionnaires_report(7)
         rtxt = svc.reminders_report(7)
         self.assertIn("Ответов: 20", qtxt)
-        self.assertIn("Personal reminders: created=4", rtxt)
+        self.assertIn("Личные напоминания: создано=4", rtxt)
 
     def test_statistics_report_contains_business_metrics(self):
         txt = self._svc().statistics_report(7)

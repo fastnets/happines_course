@@ -351,37 +351,99 @@ def register_admin_handlers(app, settings: Settings, services: dict):
     async def _show_admin_home(update: Update):
         uid = update.effective_user.id
         _set_menu(uid, "home")
-        await update.effective_message.reply_text("🛠 Админка", reply_markup=kb_admin_home(_is_owner(update)))
+        await update.effective_message.reply_text(
+            "🛠 Админка\n\n"
+            "Разделы:\n"
+            "• 📚 Лекции — контент уроков по дням\n"
+            "• 📝 Задания — практики по дням\n"
+            "• 🧩 Доп. материалы — необязательные материалы\n"
+            "• 📋 Анкеты — анкеты по дням и рассылки\n"
+            "• 📈 Аналитика — отчёты за 1/7/30 дней\n"
+            "• 🏆 Ачивки — правила достижений\n"
+            "• 🆘 Тикеты — обращения пользователей\n"
+            "• 👥 Админы — управление ролями (owner)",
+            reply_markup=kb_admin_home(_is_owner(update)),
+        )
 
     async def _show_lessons_menu(update: Update):
         uid = update.effective_user.id
         _set_menu(uid, "lessons")
-        await update.effective_message.reply_text("📚 Лекции", reply_markup=kb_admin_actions(False))
+        await update.effective_message.reply_text(
+            "📚 Лекции\n\n"
+            "Доступные действия:\n"
+            "• 📋 Список\n"
+            "• ➕ Создать\n"
+            "• ✏️ Редактировать\n"
+            "• 🗑 Удалить",
+            reply_markup=kb_admin_actions(False),
+        )
 
     async def _show_quests_menu(update: Update):
         uid = update.effective_user.id
         _set_menu(uid, "quests")
-        await update.effective_message.reply_text("📝 Задания", reply_markup=kb_admin_actions(False))
+        await update.effective_message.reply_text(
+            "📝 Задания\n\n"
+            "Доступные действия:\n"
+            "• 📋 Список\n"
+            "• ➕ Создать\n"
+            "• ✏️ Редактировать\n"
+            "• 🗑 Удалить",
+            reply_markup=kb_admin_actions(False),
+        )
 
     async def _show_extras_menu(update: Update):
         uid = update.effective_user.id
         _set_menu(uid, "extra")
-        await update.effective_message.reply_text("🧩 Доп. материалы", reply_markup=kb_admin_actions(False))
+        await update.effective_message.reply_text(
+            "🧩 Доп. материалы\n\n"
+            "Доступные действия:\n"
+            "• 📋 Список\n"
+            "• ➕ Создать\n"
+            "• ✏️ Редактировать\n"
+            "• 🗑 Удалить",
+            reply_markup=kb_admin_actions(False),
+        )
 
     async def _show_q_menu(update: Update):
         uid = update.effective_user.id
         _set_menu(uid, "questionnaires")
-        await update.effective_message.reply_text("📋 Анкеты", reply_markup=kb_admin_actions(True))
+        await update.effective_message.reply_text(
+            "📋 Анкеты\n\n"
+            "Доступные действия:\n"
+            "• 📋 Список\n"
+            "• ➕ Создать\n"
+            "• ✏️ Редактировать\n"
+            "• 🗑 Удалить\n"
+            "• 🎲 Рандомная анкета всем",
+            reply_markup=kb_admin_actions(True),
+        )
 
     async def _show_achievements_menu(update: Update):
         uid = update.effective_user.id
         _set_menu(uid, "achievements")
-        await update.effective_message.reply_text("🏆 Ачивки", reply_markup=kb_admin_actions(False))
+        await update.effective_message.reply_text(
+            "🏆 Ачивки\n\n"
+            "Доступные действия:\n"
+            "• 📋 Список\n"
+            "• ➕ Создать\n"
+            "• ✏️ Редактировать\n"
+            "• 🗑 Удалить",
+            reply_markup=kb_admin_actions(False),
+        )
 
     async def _show_admins_menu(update: Update):
         uid = update.effective_user.id
         _set_menu(uid, "admins")
-        await update.effective_message.reply_text("👥 Управление админами", reply_markup=kb_admin_admins())
+        await update.effective_message.reply_text(
+            "👥 Управление админами\n\n"
+            "Что можно:\n"
+            "• Список админов\n"
+            "• Добавить admin\n"
+            "• Выдать owner\n"
+            "• Понизить owner до admin\n"
+            "• Удалить из админов",
+            reply_markup=kb_admin_admins(),
+        )
 
     ACH_METRIC_OPTIONS = [
         ("Баллы", "points"),
@@ -595,8 +657,11 @@ def register_admin_handlers(app, settings: Settings, services: dict):
         _set_menu(uid, "analytics", {"days": safe_days})
         if not show_report:
             await update.effective_message.reply_text(
-                "\U0001F4C8 \u0410\u043d\u0430\u043b\u0438\u0442\u0438\u043a\u0430\n"
-                "\u0412\u044b\u0431\u0435\u0440\u0438 \u043f\u0435\u0440\u0438\u043e\u0434:",
+                "📈 Аналитика\n\n"
+                "Выбери период отчёта:\n"
+                "• 1 день — оперативная проверка\n"
+                "• 7 дней — недельный срез\n"
+                "• 30 дней — общая динамика",
                 reply_markup=kb_admin_analytics(),
             )
             return
@@ -685,7 +750,7 @@ def register_admin_handlers(app, settings: Settings, services: dict):
         tnum = _ticket_number(row)
         return (
             f"• №{tnum} (id={tid}) [{_ticket_status_label(row.get('status'))}] "
-            f"user={row.get('user_id')} — {txt}"
+            f"пользователь={row.get('user_id')} — {txt}"
         )
 
     def _ticket_details(row: dict) -> str:
@@ -694,7 +759,7 @@ def register_admin_handlers(app, settings: Settings, services: dict):
         base = [
             f"🆘 Тикет №{tnum} (id={tid})",
             f"Статус: {_ticket_status_label(row.get('status'))}",
-            f"user_id: {row.get('user_id')}",
+            f"ID пользователя: {row.get('user_id')}",
             f"Создан: {row.get('created_at')}",
             "",
             "Сообщение:",
@@ -740,7 +805,7 @@ def register_admin_handlers(app, settings: Settings, services: dict):
     def _resolve_user_ref(raw: str) -> tuple[int | None, str | None]:
         val = (raw or "").strip()
         if not val:
-            return None, "Укажи @username или user_id."
+            return None, "Укажи @username или ID пользователя."
         if val.startswith("@"):
             uname = val[1:].strip()
             if not uname:
@@ -752,12 +817,12 @@ def register_admin_handlers(app, settings: Settings, services: dict):
         if re.match(r"^\d+$", val):
             uid = int(val)
             if uid <= 0:
-                return None, "Некорректный user_id."
+                return None, "Некорректный ID пользователя."
             row = user_svc.users.get_user(uid)
             if not row:
-                return None, "Такого user_id нет в базе. Пусть пользователь сначала запустит бота /start."
+                return None, "Такого ID пользователя нет в базе. Пусть пользователь сначала запустит бота /start."
             return uid, None
-        return None, "Формат: @username или user_id."
+        return None, "Формат: @username или ID пользователя."
 
     async def _send_admins_list(update: Update, *, reply_markup=None):
         if not admin_svc or not hasattr(admin_svc, "list_admins"):
@@ -787,7 +852,7 @@ def register_admin_handlers(app, settings: Settings, services: dict):
             return
         target_uid = _parse_target_uid(context)
         if not target_uid:
-            await update.effective_message.reply_text("Формат: /admin_add <user_id>")
+            await update.effective_message.reply_text("Формат: /admin_add <id>")
             return
         before_role = _admin_role_by_uid(target_uid)
         ok, msg = admin_svc.grant_admin(update.effective_user.id, target_uid)
@@ -810,7 +875,7 @@ def register_admin_handlers(app, settings: Settings, services: dict):
                     [
                         f"• Пользователь: {_user_label(target_uid)}",
                         f"• Роль: {_admin_role_label(before_role)} → {_admin_role_label(after_role)}",
-                        f"• Invite-статус: {invite_status or '—'}",
+                        f"• Статус приглашения: {invite_status or '—'}",
                     ]
                 ),
             )
@@ -821,7 +886,7 @@ def register_admin_handlers(app, settings: Settings, services: dict):
             return
         target_uid = _parse_target_uid(context)
         if not target_uid:
-            await update.effective_message.reply_text("Формат: /admin_remove <user_id>")
+            await update.effective_message.reply_text("Формат: /admin_remove <id>")
             return
         before_role = _admin_role_by_uid(target_uid)
         ok, msg = admin_svc.remove_admin(update.effective_user.id, target_uid)
@@ -1261,19 +1326,19 @@ def register_admin_handlers(app, settings: Settings, services: dict):
                 raise ApplicationHandlerStop
             if text == BTN_ADM_ADD:
                 state.set_state(uid, ADMIN_WIZARD_STEP, {"mode": "adm_add_target"})
-                await update.effective_message.reply_text("Введи @username или user_id для добавления в admin.")
+                await update.effective_message.reply_text("Введи @username или ID пользователя для добавления в admin.")
                 raise ApplicationHandlerStop
             if text == BTN_ADM_PROMOTE:
                 state.set_state(uid, ADMIN_WIZARD_STEP, {"mode": "adm_promote_target"})
-                await update.effective_message.reply_text("Введи @username или user_id для выдачи роли owner.")
+                await update.effective_message.reply_text("Введи @username или ID пользователя для выдачи роли owner.")
                 raise ApplicationHandlerStop
             if text == BTN_ADM_DEMOTE:
                 state.set_state(uid, ADMIN_WIZARD_STEP, {"mode": "adm_demote_target"})
-                await update.effective_message.reply_text("Введи @username или user_id для понижения до admin.")
+                await update.effective_message.reply_text("Введи @username или ID пользователя для понижения до admin.")
                 raise ApplicationHandlerStop
             if text == BTN_ADM_REMOVE:
                 state.set_state(uid, ADMIN_WIZARD_STEP, {"mode": "adm_remove_target"})
-                await update.effective_message.reply_text("Введи @username или user_id для удаления из админов.")
+                await update.effective_message.reply_text("Введи @username или ID пользователя для удаления из админов.")
                 raise ApplicationHandlerStop
 
         # Stop further handlers while admin menu is active.
@@ -1498,19 +1563,19 @@ def register_admin_handlers(app, settings: Settings, services: dict):
                 raise ApplicationHandlerStop
             if text == BTN_ADM_ADD:
                 state.set_state(uid, ADMIN_WIZARD_STEP, {"mode": "adm_add_target"})
-                await update.effective_message.reply_text("Введи @username или user_id для добавления в admin.")
+                await update.effective_message.reply_text("Введи @username или ID пользователя для добавления в admin.")
                 raise ApplicationHandlerStop
             if text == BTN_ADM_PROMOTE:
                 state.set_state(uid, ADMIN_WIZARD_STEP, {"mode": "adm_promote_target"})
-                await update.effective_message.reply_text("Введи @username или user_id для выдачи роли owner.")
+                await update.effective_message.reply_text("Введи @username или ID пользователя для выдачи роли owner.")
                 raise ApplicationHandlerStop
             if text == BTN_ADM_DEMOTE:
                 state.set_state(uid, ADMIN_WIZARD_STEP, {"mode": "adm_demote_target"})
-                await update.effective_message.reply_text("Введи @username или user_id для понижения до admin.")
+                await update.effective_message.reply_text("Введи @username или ID пользователя для понижения до admin.")
                 raise ApplicationHandlerStop
             if text == BTN_ADM_REMOVE:
                 state.set_state(uid, ADMIN_WIZARD_STEP, {"mode": "adm_remove_target"})
-                await update.effective_message.reply_text("Введи @username или user_id для удаления из админов.")
+                await update.effective_message.reply_text("Введи @username или ID пользователя для удаления из админов.")
                 raise ApplicationHandlerStop
 
         # --- Lessons wizard ---
@@ -2731,7 +2796,7 @@ def register_admin_handlers(app, settings: Settings, services: dict):
                             [
                                 f"• Пользователь: {_user_label(target_uid)}",
                                 f"• Роль: {_admin_role_label(before_role)} → {_admin_role_label(after_role)}",
-                                f"• Invite-статус: {invite_status or '—'}",
+                                f"• Статус приглашения: {invite_status or '—'}",
                             ]
                         ),
                     )
@@ -2783,7 +2848,7 @@ def register_admin_handlers(app, settings: Settings, services: dict):
                         [
                             f"• Пользователь: {_user_label(target_uid)}",
                             f"• Роль: {_admin_role_label(before_role)} → {_admin_role_label(after_role)}",
-                            f"• Invite-статус: {invite_status or '—'}",
+                            f"• Статус приглашения: {invite_status or '—'}",
                         ]
                     ),
                 )

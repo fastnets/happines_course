@@ -827,7 +827,7 @@ def register_user_handlers(app, settings: Settings, services: dict):
         q = update.callback_query
         await q.answer()
         if not habit_svc:
-            await q.edit_message_text("❌ HabitService не подключён.")
+            await q.edit_message_text("❌ Сервис привычек не подключён.")
             return
 
         freq = q.data.split(":", 2)[-1]
@@ -863,7 +863,7 @@ def register_user_handlers(app, settings: Settings, services: dict):
         q = update.callback_query
         await q.answer()
         if not habit_svc:
-            await q.edit_message_text("❌ HabitService не подключён.")
+            await q.edit_message_text("❌ Сервис привычек не подключён.")
             return
         try:
             occ_id = int(q.data.split(":")[-1])
@@ -884,7 +884,7 @@ def register_user_handlers(app, settings: Settings, services: dict):
         q = update.callback_query
         await q.answer()
         if not habit_svc:
-            await q.edit_message_text("❌ HabitService не подключён.")
+            await q.edit_message_text("❌ Сервис привычек не подключён.")
             return
         try:
             occ_id = int(q.data.split(":")[-1])
@@ -900,7 +900,7 @@ def register_user_handlers(app, settings: Settings, services: dict):
         q = update.callback_query
         await q.answer()
         if not habit_svc:
-            await q.edit_message_text("❌ HabitService не подключён.")
+            await q.edit_message_text("❌ Сервис привычек не подключён.")
             return
         try:
             hid = int(q.data.split(":")[-1])
@@ -921,7 +921,7 @@ def register_user_handlers(app, settings: Settings, services: dict):
         q = update.callback_query
         await q.answer()
         if not habit_svc:
-            await q.edit_message_text("❌ HabitService не подключён.")
+            await q.edit_message_text("❌ Сервис привычек не подключён.")
             return
         try:
             hid = int(q.data.split(":")[-1])
@@ -1249,7 +1249,7 @@ def register_user_handlers(app, settings: Settings, services: dict):
                 ZoneInfo(text)
             except Exception:
                 await update.effective_message.reply_text(
-                    "Не похоже на IANA timezone. Пример: Europe/Moscow, Asia/Yekaterinburg."
+                    "Не похоже на часовой пояс IANA. Пример: Europe/Moscow, Asia/Yekaterinburg."
                 )
                 raise ApplicationHandlerStop
             user_svc.set_timezone(uid, text)
@@ -1310,7 +1310,7 @@ def register_user_handlers(app, settings: Settings, services: dict):
         if cur == STEP_HABIT_PICK_FOR_EDIT:
             if not habit_svc:
                 user_svc.set_step(uid, None)
-                await update.effective_message.reply_text("❌ HabitService не подключён.", reply_markup=menus.kb_habits())
+                await update.effective_message.reply_text("❌ Сервис привычек не подключён.", reply_markup=menus.kb_habits())
                 raise ApplicationHandlerStop
             hid = _extract_numeric_id(text)
             if not hid:
@@ -1366,7 +1366,7 @@ def register_user_handlers(app, settings: Settings, services: dict):
         if cur == STEP_HABIT_EDIT_TITLE:
             if not habit_svc:
                 user_svc.set_step(uid, None)
-                await update.effective_message.reply_text("❌ HabitService не подключён.", reply_markup=menus.kb_habits())
+                await update.effective_message.reply_text("❌ Сервис привычек не подключён.", reply_markup=menus.kb_habits())
                 raise ApplicationHandlerStop
             new_title = (text or "").strip()
             if not new_title:
@@ -1390,7 +1390,7 @@ def register_user_handlers(app, settings: Settings, services: dict):
         if cur == STEP_HABIT_EDIT_TIME:
             if not habit_svc:
                 user_svc.set_step(uid, None)
-                await update.effective_message.reply_text("❌ HabitService не подключён.", reply_markup=menus.kb_habits())
+                await update.effective_message.reply_text("❌ Сервис привычек не подключён.", reply_markup=menus.kb_habits())
                 raise ApplicationHandlerStop
             hhmm = _parse_hhmm(text)
             if not hhmm:
@@ -1420,7 +1420,7 @@ def register_user_handlers(app, settings: Settings, services: dict):
         if cur == STEP_HABIT_EDIT_FREQ:
             if not habit_svc:
                 user_svc.set_step(uid, None)
-                await update.effective_message.reply_text("❌ HabitService не подключён.", reply_markup=menus.kb_habits())
+                await update.effective_message.reply_text("❌ Сервис привычек не подключён.", reply_markup=menus.kb_habits())
                 raise ApplicationHandlerStop
             m = {
                 "Ежедневно": "daily",
@@ -1454,7 +1454,7 @@ def register_user_handlers(app, settings: Settings, services: dict):
         if cur == STEP_HABIT_PICK_FOR_DELETE:
             if not habit_svc:
                 user_svc.set_step(uid, None)
-                await update.effective_message.reply_text("❌ HabitService не подключён.", reply_markup=menus.kb_habits())
+                await update.effective_message.reply_text("❌ Сервис привычек не подключён.", reply_markup=menus.kb_habits())
                 raise ApplicationHandlerStop
             hid = _extract_numeric_id(text)
             if not hid:
@@ -1964,7 +1964,18 @@ def register_user_handlers(app, settings: Settings, services: dict):
                 raise ApplicationHandlerStop
             day_index = schedule.current_day_index(uid)
             await update.effective_message.reply_text(
-                f"🗓 Мой день\nКурс: Курс на счастье\nДень: {day_index}\nВремя: {prof['delivery_time']}\n\nВыбери материал:",
+                f"🗓 Мой день\n"
+                f"Курс: Курс на счастье\n"
+                f"День: {day_index}\n"
+                f"Время: {prof['delivery_time']}\n\n"
+                f"Что есть в этом разделе:\n"
+                f"• 💬 Цитата дня — короткая мысль\n"
+                f"• 🖼 Картинка дня — визуальный акцент\n"
+                f"• 💡 Совет дня — практический шаг\n"
+                f"• 📚 Книга дня / 🎬 Фильм дня — рекомендации\n"
+                f"• 😊 Настроение — отметка и график\n"
+                f"• Получить пропущенные материалы — вернуться к незавершенному\n\n"
+                f"Выбери пункт:",
                 reply_markup=menus.kb_day(),
             )
             raise ApplicationHandlerStop
@@ -1980,13 +1991,25 @@ def register_user_handlers(app, settings: Settings, services: dict):
         if text == texts.MENU_SETTINGS:
             time_text = prof["delivery_time"] if prof.get("enrolled") else "не указано (нужна запись /enroll)"
             await update.effective_message.reply_text(
-                f"⚙️ Настройки\nИмя: {prof['display_name']}\nВами указанное время: {time_text}\n\nВыбери действие:",
+                f"⚙️ Настройки\n"
+                f"Имя: {prof['display_name']}\n"
+                f"Вами указанное время: {time_text}\n\n"
+                f"Что можно изменить:\n"
+                f"• ⏰ Время — когда приходят материалы\n"
+                f"• 🕒 Часовой пояс — для корректного расписания\n"
+                f"• ✏️ Имя — как бот к тебе обращается\n"
+                f"• 🔔 Напоминания — привычки и разовые напоминания\n\n"
+                f"Выбери действие:",
                 reply_markup=menus.kb_settings(),
             )
             raise ApplicationHandlerStop
 
         if text == texts.MENU_HELP:
-            await update.effective_message.reply_text("❓ Помощь\n\nВыбери вопрос:", reply_markup=_faq_list_markup())
+            await update.effective_message.reply_text(
+                "❓ Помощь\n\nВыбери вопрос из списка.\n"
+                "Если не помогло — нажми «🆘 Это не помогло».",
+                reply_markup=_faq_list_markup(),
+            )
             raise ApplicationHandlerStop
 
         if text in (texts.HELP_NOT_HELPED, texts.HELP_CONTACT_ADMIN):
@@ -1999,7 +2022,11 @@ def register_user_handlers(app, settings: Settings, services: dict):
                 await update.effective_message.reply_text("❌ Трекер настроения временно недоступен.")
                 raise ApplicationHandlerStop
             await update.effective_message.reply_text(
-                "😊 Настроение\n\nВыбери действие:",
+                "😊 Настроение\n\n"
+                "Что тут можно:\n"
+                "• ✍️ Отметить настроение — сохранить оценку 1-5 за сегодня\n"
+                "• 📈 График 7/30 дн. — посмотреть динамику\n\n"
+                "Выбери действие:",
                 reply_markup=_mood_menu_markup(),
             )
             raise ApplicationHandlerStop
@@ -2168,7 +2195,7 @@ def register_user_handlers(app, settings: Settings, services: dict):
 
         if text == texts.HABITS_LIST:
             if not habit_svc:
-                await update.effective_message.reply_text("❌ HabitService не подключён.", reply_markup=menus.kb_habits())
+                await update.effective_message.reply_text("❌ Сервис привычек не подключён.", reply_markup=menus.kb_habits())
                 raise ApplicationHandlerStop
             habits = habit_svc.list_for_user(uid)
             if not habits:
@@ -2188,7 +2215,7 @@ def register_user_handlers(app, settings: Settings, services: dict):
 
         if text == texts.HABITS_EDIT:
             if not habit_svc:
-                await update.effective_message.reply_text("❌ HabitService не подключён.", reply_markup=menus.kb_habits())
+                await update.effective_message.reply_text("❌ Сервис привычек не подключён.", reply_markup=menus.kb_habits())
                 raise ApplicationHandlerStop
             habits = habit_svc.list_for_user(uid)
             if not habits:
@@ -2206,7 +2233,7 @@ def register_user_handlers(app, settings: Settings, services: dict):
 
         if text == texts.HABITS_DELETE:
             if not habit_svc:
-                await update.effective_message.reply_text("❌ HabitService не подключён.", reply_markup=menus.kb_habits())
+                await update.effective_message.reply_text("❌ Сервис привычек не подключён.", reply_markup=menus.kb_habits())
                 raise ApplicationHandlerStop
             habits = habit_svc.list_for_user(uid)
             if not habits:
